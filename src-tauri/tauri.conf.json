@@ -2,11 +2,11 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "openapiui",
   "version": "0.1.1",
-  "identifier": "com.openapiui.app",
+  "identifier": "com.openapiui.openapiui",
   "build": {
-    "beforeDevCommand": "pnpm dev",
+    "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "pnpm build",
+    "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
   },
   "app": {
