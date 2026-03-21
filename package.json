@@ -3,6 +3,8 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "description": "OpenAPI UI",
+  "author": "Alan Ribeiro Araujo Morais <alan.r.araujo@gmail.com>",
   "scripts": {
     "dev": "vite",
     "tauri:dev": "tauri dev",
