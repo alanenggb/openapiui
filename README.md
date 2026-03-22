@@ -6,7 +6,7 @@ Uma aplicação desktop para testar e explorar APIs OpenAPI construída com Taur
 
 ### 📋 Gerenciamento de Configurações
 - **Múltiplas Configurações**: Adicione e gerencie várias configurações de APIs
-- **Autenticação Flexível**: Suporte para autenticação padrão (gcloud) ou custom
+- **Autenticação padrão**: Suporte para autenticação gcloud (executa gcloud auth print-identity-token e inclui no header Authorization automaticamente)
 - **Interface Intuitiva**: Formulário simples para adicionar/editar configurações de API
 
 ### 🔍 Exploração de APIs
@@ -36,7 +36,7 @@ Uma aplicação desktop para testar e explorar APIs OpenAPI construída com Taur
 
 ### 🔧 Funcionalidades Técnicas
 - **Proxy Tauri**: Evita problemas de CORS usando proxy nativo
-- **Autenticação gcloud**: Integração com Google Cloud para tokens
+- **Autenticação gcloud**: Executa comando gcloud para obter token e inclui no header Authorization automaticamente
 - **Tratamento de Erros**: Mensagens detalhadas para diferentes tipos de erro
 - **Copiar Resultados**: Botões para copiar headers, body e respostas
 
