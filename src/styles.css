@@ -156,6 +156,33 @@ body {
   transform: translateY(-1px);
 }
 
+.reload-spec-btn {
+  background: var(--primary-color);
+  color: white;
+  padding: 0.5rem;
+  border: none;
+  border-radius: 8px;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.25s;
+  min-width: 44px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.reload-spec-btn:hover:not(:disabled) {
+  background: var(--primary-hover);
+  transform: translateY(-1px);
+}
+
+.reload-spec-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .devtools-btn:hover {
   background: var(--primary-hover);
   transform: translateY(-1px);
@@ -634,7 +661,8 @@ span.method-type.patch {
 }
 
 .path-item.expanded .path-content {
-  max-height: 2000px; /* Valor suficiente para conter todo o conteúdo */
+  max-height: 2000px;
+  overflow-y: auto;
   transition: max-height 0.5s ease-in;
 }
 
@@ -696,6 +724,30 @@ span.method-type.patch {
   color: #333;
   font-size: 0.9rem;
   font-weight: 600;
+}
+
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.reset-btn {
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: all 0.25s;
+  color: #666;
+}
+
+.reset-btn:hover {
+  background: var(--primary-color);
+  color: white;
+  border-color: var(--primary-color);
 }
 
 .param-input {
@@ -1185,7 +1237,8 @@ span.method-type.patch {
 
 .test-result {
   border-radius: 6px;
-  overflow: hidden;
+  overflow: visible;
+  max-height: none;
 }
 
 .test-result.success {
@@ -1301,6 +1354,9 @@ span.method-type.patch {
   font-size: 0.8rem;
   line-height: 1.4;
   overflow-x: auto;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  max-width: 100%;
   margin: 0.5rem 0 0 0;
 }
 
@@ -1324,8 +1380,10 @@ span.method-type.patch {
   font-size: 0.8rem;
   line-height: 1.4;
   overflow-x: auto;
-  max-height: 300px;
-  overflow-y: auto;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  max-width: 100%;
+  max-height: 500px;
 }
 
 .test-error {

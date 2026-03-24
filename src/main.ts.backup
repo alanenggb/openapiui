@@ -85,6 +85,13 @@ class ConfigManager {
     aboutModal: document.querySelector("#about-modal") as HTMLDivElement,
     closeAboutModalBtn: document.querySelector("#close-about-modal") as HTMLButtonElement,
     welcomeScreen: document.querySelector("#welcome-screen") as HTMLDivElement,
+    searchModal: document.querySelector("#search-modal") as HTMLDivElement,
+    closeSearchModalBtn: document.querySelector("#close-search-modal") as HTMLButtonElement,
+    searchInput: document.querySelector("#search-input") as HTMLInputElement,
+    searchClearBtn: document.querySelector("#search-clear-btn") as HTMLButtonElement,
+    searchTestResultsCheckbox: document.querySelector("#search-test-results") as HTMLInputElement,
+    searchSavedResultsCheckbox: document.querySelector("#search-saved-results") as HTMLInputElement,
+    searchResults: document.querySelector("#search-results") as HTMLDivElement,
   };
 
   async init() {
@@ -184,6 +191,43 @@ class ConfigManager {
       if (e.key === "Escape") {
         this.handleEscapeKey();
       }
+      
+      // Ctrl+F ou Cmd+F para abrir busca
+      if ((e.ctrlKey || e.metaKey) && e.key === "f") {
+        e.preventDefault();
+        this.showSearchModal();
+      }
+    });
+
+    // Event listeners do modal de busca
+    this.elements.closeSearchModalBtn.addEventListener("click", () => {
+      this.hideSearchModal();
+    });
+
+    // Fechar modal de busca clicando fora
+    this.elements.searchModal.addEventListener("click", (e) => {
+      if (e.target === this.elements.searchModal) {
+        this.hideSearchModal();
+      }
+    });
+
+    // Input de busca
+    this.elements.searchInput.addEventListener("input", () => {
+      this.performSearch();
+    });
+
+    // Botão de limpar busca
+    this.elements.searchClearBtn.addEventListener("click", () => {
+      this.clearSearch();
+    });
+
+    // Checkboxes de opções de busca
+    this.elements.searchTestResultsCheckbox.addEventListener("change", () => {
+      this.performSearch();
+    });
+
+    this.elements.searchSavedResultsCheckbox.addEventListener("change", () => {
+      this.performSearch();
     });
   }
 
@@ -472,9 +516,6 @@ class ConfigManager {
   }
 
   private displayOpenApiSpec(spec: any, container: HTMLDivElement) {
-    // Obter o ID da configuração atual antes de usá-lo
-    const currentConfigId = this.getCurrentConfigId();
-    
     const specHtml = `
       <div class="openapi-spec">
         <h4>Especificação OpenAPI</h4>
@@ -507,7 +548,7 @@ class ConfigManager {
                       </div>
                       <div class="path-content">
                         <div class="method-test">
-                          ${this.generateTestInterface(method, details, path, spec, currentConfigId)}
+                          ${this.generateTestInterface(method, details, path, spec)}
                         </div>
                       </div>
                     </div>
@@ -528,6 +569,7 @@ class ConfigManager {
     this.attachTestEventListeners();
     
     // Atualizar selects de conjuntos salvos para todos os endpoints
+    const currentConfigId = this.getCurrentConfigId();
     if (currentConfigId && spec.paths) {
       Object.entries(spec.paths).forEach(([path, methods]: [string, any]) => {
         // Filtrar apenas os métodos que não têm "summary": "Root"
@@ -684,6 +726,11 @@ class ConfigManager {
     const historyModal = document.querySelector('.history-modal:not(.hidden)') as HTMLElement;
     if (historyModal) {
       this.closeHistoryModal(historyModal);
+    }
+    
+    // Verificar se modal de busca está aberto
+    if (!this.elements.searchModal.classList.contains('hidden')) {
+      this.hideSearchModal();
     }
   }
 
@@ -860,7 +907,7 @@ class ConfigManager {
   }
 
   private async saveValueSet(method: string, path: string, configId: string) {
-    const pathId = path.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '');
+    const pathId = path.replace(/[^a-zA-Z0-9]/g, '-');
     const nameInput = document.getElementById(`save-name-${method}-${pathId}`) as HTMLInputElement;
     const name = nameInput?.value?.trim();
     
@@ -932,7 +979,7 @@ class ConfigManager {
   }
 
   private loadValueSet(method: string, path: string, configId: string, savedSetId: string) {
-    const pathId = path.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '');
+    const pathId = path.replace(/[^a-zA-Z0-9]/g, '-');
     const savedSet = this.savedValueSets[configId]?.[method]?.[path]?.find(set => set.id === savedSetId);
     
     if (!savedSet) {
@@ -962,7 +1009,7 @@ class ConfigManager {
   }
 
   private updateSavedSetsSelect(method: string, path: string, configId: string) {
-    const pathId = path.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '');
+    const pathId = path.replace(/[^a-zA-Z0-9]/g, '-');
     const select = document.getElementById(`saved-sets-${method}-${pathId}`) as HTMLSelectElement;
     
     if (!select) return;
@@ -980,7 +1027,7 @@ class ConfigManager {
   }
 
   private async deleteValueSet(method: string, path: string, configId: string) {
-    const pathId = path.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '');
+    const pathId = path.replace(/[^a-zA-Z0-9]/g, '-');
     const select = document.getElementById(`saved-sets-${method}-${pathId}`) as HTMLSelectElement;
     const selectedId = select?.value;
     
@@ -1045,7 +1092,7 @@ class ConfigManager {
   }
 
   private async saveTestResult(method: string, path: string, configId: string, queryParams: Record<string, string>, body: string, response: TestResponse, timestamp: string) {
-    const pathId = path.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '');
+    const pathId = path.replace(/[^a-zA-Z0-9]/g, '-');
     const nameInput = document.getElementById(`result-name-${method}-${pathId}`) as HTMLInputElement;
     const name = nameInput?.value?.trim();
     
@@ -1300,23 +1347,24 @@ class ConfigManager {
     const config = this.configs.find(c => c.id === configId);
     if (!config) return;
 
+    const testResult = document.getElementById(`test-result-${method}-${path.replace(/[^a-zA-Z0-9]/g, '-')}`);
+    if (!testResult) return;
+
     // Coletar query params
-    const pathId = path.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '');
     const queryParams: Record<string, string> = {};
-    document.querySelectorAll(`[data-query-param="${method}-${pathId}"]`).forEach(input => {
+    document.querySelectorAll(`[data-query-param="${method}-${path.replace(/[^a-zA-Z0-9]/g, '-')}"]`).forEach(input => {
       const param = (input as HTMLInputElement).dataset.param;
       const value = (input as HTMLInputElement).value;
-      if (param) {
+      if (param && value) {
         queryParams[param] = value;
       }
     });
 
     // Coletar body
-    const bodyTextarea = document.getElementById(`body-${method}-${pathId}`) as HTMLTextAreaElement;
+    const bodyTextarea = document.getElementById(`body-${method}-${path.replace(/[^a-zA-Z0-9]/g, '-')}`) as HTMLTextAreaElement;
     const body = bodyTextarea?.value || '';
-    
-    const testResult = document.getElementById(`test-result-${method}-${pathId}`);
-    if (!testResult) return;
+
+    console.log('Executando teste:', { method, path, configId, useAuth: config.useDefaultAuth });
     
     testResult.innerHTML = '<div class="test-loading">Executando teste...</div>';
 
@@ -1327,6 +1375,7 @@ class ConfigManager {
         : '';
       
       const fullUrl = `${baseUrl}${path}${queryString}`;
+      console.log('URL completa:', fullUrl);
 
       // Usar o proxy Tauri para fazer a requisição com autenticação
       const response: TestResponse = await invoke('make_test_request', {
@@ -1336,6 +1385,9 @@ class ConfigManager {
         useAuth: config.useDefaultAuth
       });
 
+      console.log('Resposta recebida via Tauri proxy:', response);
+
+      const pathId = path.replace(/[^a-zA-Z0-9]/g, '-');
       const timestamp = new Date().toISOString();
       const hasData = response.data && (typeof response.data === 'object' && Object.keys(response.data).length > 0 || typeof response.data === 'string' && response.data.trim());
 
@@ -1422,11 +1474,12 @@ class ConfigManager {
     }
   }
 
-  private generateTestInterface(method: string, details: any, path: string, spec: any, configId: string): string {
+  private generateTestInterface(method: string, details: any, path: string, spec: any): string {
     const queryParams = details.parameters?.filter((param: any) => param.in === 'query') || [];
     const hasBody = ['POST', 'PUT', 'PATCH'].includes(method.toUpperCase());
     const exampleBody = this.generateExampleBody(details, spec);
     const pathId = path.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '');
+    const currentConfig = this.configs.find(c => c.id === this.getCurrentConfigId());
     
     // Armazenar valor padrão no mapa
     const bodyKey = `${method}-${pathId}`;
@@ -1438,7 +1491,7 @@ class ConfigManager {
           <div class="query-params">
             <div class="section-header">
               <h6>Query Parameters:</h6>
-              <button class="reset-btn" data-reset="query-${method}-${pathId}" title="Resetar Query Params">🔄</button>
+              <button class="reset-btn data-reset="query-${method}-${pathId}" title="Resetar Query Params">🔄</button>
             </div>
             ${queryParams.map((param: any) => `
               <div class="param-input">
@@ -1464,7 +1517,7 @@ class ConfigManager {
           <div class="body-input">
             <div class="section-header">
               <h6>Body (JSON):</h6>
-              <button class="reset-btn" data-reset="body-${method}-${pathId}" title="Resetar Body">🔄</button>
+              <button class="reset-btn data-reset="body-${method}-${pathId}" title="Resetar Body">🔄</button>
             </div>
             <textarea 
               id="body-${method}-${pathId}"
@@ -1480,7 +1533,7 @@ class ConfigManager {
             class="test-btn" 
             data-method="${method}"
             data-path="${path}"
-            data-config-id="${configId}"
+            data-config-id="${currentConfig?.id || ''}"
           >
             Testar ${method.toUpperCase()}
           </button>
@@ -1499,7 +1552,7 @@ class ConfigManager {
               class="save-set-btn" 
               data-method="${method}"
               data-path="${path}"
-              data-config-id="${configId}"
+              data-config-id="${currentConfig?.id || ''}"
             >
               Salvar Valores Atuais
             </button>
@@ -1512,7 +1565,7 @@ class ConfigManager {
                 class="saved-sets-select"
                 data-method="${method}"
                 data-path="${path}"
-                data-config-id="${configId}"
+                data-config-id="${currentConfig?.id || ''}"
               >
                 <option value="">Selecione um conjunto salvo...</option>
               </select>
@@ -1520,7 +1573,7 @@ class ConfigManager {
                 class="delete-set-btn" 
                 data-method="${method}"
                 data-path="${path}"
-                data-config-id="${configId}"
+                data-config-id="${currentConfig?.id || ''}"
                 title="Excluir conjunto selecionado"
               >
                 🗑️
@@ -1727,9 +1780,338 @@ class ConfigManager {
       }
     }
   }
+
+  // Métodos de busca
+  private showSearchModal() {
+    this.elements.searchModal.classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+    this.elements.searchInput.focus();
+  }
+
+  private hideSearchModal() {
+    this.elements.searchModal.classList.add('hidden');
+    document.body.style.overflow = '';
+  }
+
+  private clearSearch() {
+    this.elements.searchInput.value = '';
+    this.performSearch();
+  }
+
+  private performSearch() {
+    const query = this.elements.searchInput.value.trim().toLowerCase();
+    const searchTestResults = this.elements.searchTestResultsCheckbox.checked;
+    const searchSavedResults = this.elements.searchSavedResultsCheckbox.checked;
+
+    if (!query) {
+      this.elements.searchResults.innerHTML = '<div class="search-empty">Digite um termo para buscar...</div>';
+      return;
+    }
+
+    const allResults: Array<{
+      type: 'test' | 'saved';
+      title: string;
+      content: string;
+      metadata: any;
+      matches: Array<{
+        section: string;
+        text: string;
+        highlighted: string;
+      }>;
+    }> = [];
+
+    // Buscar em resultados de teste visíveis na página
+    if (searchTestResults) {
+      const testResults = this.searchInTestResults(query);
+      allResults.push(...testResults);
+    }
+
+    // Buscar em resultados salvos
+    if (searchSavedResults) {
+      const savedResults = this.searchInSavedResults(query);
+      allResults.push(...savedResults);
+    }
+
+    // Ordenar por relevância (número de matches)
+    allResults.sort((a, b) => b.matches.length - a.matches.length);
+
+    this.displaySearchResults(allResults, query);
+  }
+
+  private searchInTestResults(query: string): Array<{
+    type: 'test';
+    title: string;
+    content: string;
+    metadata: any;
+    matches: Array<{
+      section: string;
+      text: string;
+      highlighted: string;
+    }>;
+  }> {
+    const results: Array<{
+      type: 'test';
+      title: string;
+      content: string;
+      metadata: any;
+      matches: Array<{
+        section: string;
+        text: string;
+        highlighted: string;
+      }>;
+    }> = [];
+
+    // Buscar em todos os elementos de resultado de teste visíveis
+    document.querySelectorAll('.test-result').forEach((resultElement, index) => {
+      const element = resultElement as HTMLElement;
+      const matches: Array<{
+        section: string;
+        text: string;
+        highlighted: string;
+      }> = [];
+
+      // Buscar no status
+      const statusElement = element.querySelector('.test-status h5');
+      if (statusElement) {
+        const statusText = statusElement.textContent || '';
+        if (statusText.toLowerCase().includes(query)) {
+          matches.push({
+            section: 'Status',
+            text: statusText,
+            highlighted: this.highlightText(statusText, query)
+          });
+        }
+      }
+
+      // Buscar na URL
+      const urlElement = element.querySelector('.test-status p');
+      if (urlElement) {
+        const urlText = urlElement.textContent || '';
+        if (urlText.toLowerCase().includes(query)) {
+          matches.push({
+            section: 'URL',
+            text: urlText,
+            highlighted: this.highlightText(urlText, query)
+          });
+        }
+      }
+
+      // Buscar nos headers
+      const headersElement = element.querySelector('.test-headers');
+      if (headersElement) {
+        const headersText = headersElement.textContent || '';
+        if (headersText.toLowerCase().includes(query)) {
+          matches.push({
+            section: 'Headers',
+            text: headersText,
+            highlighted: this.highlightText(headersText, query)
+          });
+        }
+      }
+
+      // Buscar no body enviado
+      const bodyElement = element.querySelector('.test-body');
+      if (bodyElement) {
+        const bodyText = bodyElement.textContent || '';
+        if (bodyText.toLowerCase().includes(query)) {
+          matches.push({
+            section: 'Body Enviado',
+            text: bodyText,
+            highlighted: this.highlightText(bodyText, query)
+          });
+        }
+      }
+
+      // Buscar na resposta
+      const responseElement = element.querySelector('.test-response-data');
+      if (responseElement) {
+        const responseText = responseElement.textContent || '';
+        if (responseText.toLowerCase().includes(query)) {
+          matches.push({
+            section: 'Resposta',
+            text: responseText,
+            highlighted: this.highlightText(responseText, query)
+          });
+        }
+      }
+
+      if (matches.length > 0) {
+        results.push({
+          type: 'test',
+          title: `Resultado de Teste #${index + 1}`,
+          content: element.textContent || '',
+          metadata: { element, index },
+          matches
+        });
+      }
+    });
+
+    return results;
+  }
+
+  private searchInSavedResults(query: string): Array<{
+    type: 'saved';
+    title: string;
+    content: string;
+    metadata: any;
+    matches: Array<{
+      section: string;
+      text: string;
+      highlighted: string;
+    }>;
+  }> {
+    const results: Array<{
+      type: 'saved';
+      title: string;
+      content: string;
+      metadata: any;
+      matches: Array<{
+        section: string;
+        text: string;
+        highlighted: string;
+      }>;
+    }> = [];
+
+    // Iterar sobre todos os resultados salvos
+    Object.entries(this.savedResults).forEach(([configId, configResults]) => {
+      configResults.forEach(savedResult => {
+        const matches: Array<{
+          section: string;
+          text: string;
+          highlighted: string;
+        }> = [];
+
+        // Buscar no nome
+        if (savedResult.name.toLowerCase().includes(query)) {
+          matches.push({
+            section: 'Nome',
+            text: savedResult.name,
+            highlighted: this.highlightText(savedResult.name, query)
+          });
+        }
+
+        // Buscar no endpoint
+        const endpointText = `${savedResult.endpoint.method} ${savedResult.endpoint.path}`;
+        if (endpointText.toLowerCase().includes(query)) {
+          matches.push({
+            section: 'Endpoint',
+            text: endpointText,
+            highlighted: this.highlightText(endpointText, query)
+          });
+        }
+
+        // Buscar nos query params
+        const queryParamsText = JSON.stringify(savedResult.request.queryParams, null, 2);
+        if (queryParamsText.toLowerCase().includes(query)) {
+          matches.push({
+            section: 'Query Params',
+            text: queryParamsText,
+            highlighted: this.highlightText(queryParamsText, query)
+          });
+        }
+
+        // Buscar no body
+        if (savedResult.request.body && savedResult.request.body.toLowerCase().includes(query)) {
+          matches.push({
+            section: 'Body Enviado',
+            text: savedResult.request.body,
+            highlighted: this.highlightText(savedResult.request.body, query)
+          });
+        }
+
+        // Buscar nos dados da resposta
+        const responseText = typeof savedResult.response.data === 'string' 
+          ? savedResult.response.data 
+          : JSON.stringify(savedResult.response.data, null, 2);
+        
+        if (responseText.toLowerCase().includes(query)) {
+          matches.push({
+            section: 'Resposta',
+            text: responseText,
+            highlighted: this.highlightText(responseText, query)
+          });
+        }
+
+        if (matches.length > 0) {
+          results.push({
+            type: 'saved',
+            title: savedResult.name,
+            content: JSON.stringify(savedResult, null, 2),
+            metadata: { savedResult, configId },
+            matches
+          });
+        }
+      });
+    });
+
+    return results;
+  }
+
+  private displaySearchResults(results: Array<{
+    type: 'test' | 'saved';
+    title: string;
+    content: string;
+    metadata: any;
+    matches: Array<{
+      section: string;
+      text: string;
+      highlighted: string;
+    }>;
+  }>, query: string) {
+    if (results.length === 0) {
+      this.elements.searchResults.innerHTML = '<div class="search-no-results">Nenhum resultado encontrado para "' + this.escapeHtml(query) + '"</div>';
+      return;
+    }
+
+    const resultsHtml = results.map((result, index) => `
+      <div class="search-item" data-result-index="${index}">
+        <div class="search-item-header" onclick="this.parentElement.classList.toggle('expanded')">
+          <div class="search-item-title">
+            <h4>${this.escapeHtml(result.title)}</h4>
+            <div class="search-item-meta">
+              <span class="search-item-type ${result.type}">${result.type === 'test' ? 'Teste' : 'Salvo'}</span>
+              <span>${result.matches.length} ocorrência(s)</span>
+            </div>
+          </div>
+          <span class="history-expand-icon">▶</span>
+        </div>
+        <div class="search-item-content">
+          <div class="search-item-content-inner">
+            ${result.matches.map(match => `
+              <div class="search-section">
+                <div class="search-section-title">${this.escapeHtml(match.section)}</div>
+                <div class="search-match">${match.highlighted}</div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      </div>
+    `).join('');
+
+    this.elements.searchResults.innerHTML = resultsHtml;
+
+    // Adicionar event listeners para expandir/contrair
+    this.elements.searchResults.querySelectorAll('.search-item-header').forEach(header => {
+      header.addEventListener('click', () => {
+        const item = header.parentElement as HTMLElement;
+        item.classList.toggle('expanded');
+      });
+    });
+  }
+
+  private highlightText(text: string, query: string): string {
+    if (!query) return this.escapeHtml(text);
+    
+    const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(`(${escapedQuery})`, 'gi');
+    return this.escapeHtml(text).replace(regex, '<span class="search-match-highlight">$1</span>');
+  }
 }
 
 window.addEventListener("DOMContentLoaded", () => {
   const configManager = new ConfigManager();
   configManager.init();
 });
+
+
+
