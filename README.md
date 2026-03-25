@@ -58,9 +58,14 @@ O usuário pode salvar valores de teste para reutilização futura
 O retorno da API também pode ser salvo para visualização posterior
 ![Resultado Salvo](images/openapiui_test_save_result.png)
 
+Opção de busca de texto no resultado
+![Resultado Salvo](images/openapiui_busca_valores_no_resultado.png)
+
 ### Histórico de Resultados
-O usuário pode visualizar o histórico de testes salvos, com filtro de endpoint
+O usuário pode visualizar o histórico de testes salvos, com filtro de endpoint, e buscar por substring no texto da resposta
 ![Histórico de Resultados](images/openapiui_view_saved_results.png)
+
+![Busca no Histórico](images/openapiui_busca_historico.png)
 
 ## 🛠️ Tecnologias
 

@@ -17,6 +17,7 @@ interface TestResponse {
 interface SavedValueSet {
   id: string;
   name: string;
+  pathParams: Record<string, string>;
   queryParams: Record<string, string>;
   body: string;
   createdAt: string;
@@ -65,6 +66,7 @@ class ConfigManager {
   private readonly SAVED_RESULTS_KEY = 'openapiui-saved-results';
   private readonly THEME_KEY = 'openapiui-theme';
   private defaultBodyValues = new Map<string, string>();
+  private readonly APP_VERSION = '0.1.0'; // Versão atual do aplicativo
 
   private elements = {
     configForm: document.querySelector("#config-form") as HTMLFormElement,
@@ -663,6 +665,26 @@ class ConfigManager {
   private showAboutModal() {
     this.elements.aboutModal.classList.remove('hidden');
     document.body.style.overflow = 'hidden';
+    this.loadAppVersion();
+  }
+
+  private async loadAppVersion() {
+    try {
+      // Tentar carregar do package.json via Tauri (se disponível)
+      const packageJson = await invoke<string>('read_package_json');
+      const packageData = JSON.parse(packageJson);
+      const versionElement = document.getElementById('app-version');
+      if (versionElement) {
+        versionElement.textContent = packageData.version || this.APP_VERSION;
+      }
+    } catch (error) {
+      console.error('Failed to load app version from package.json, using fallback:', error);
+      // Usar versão embutida como fallback
+      const versionElement = document.getElementById('app-version');
+      if (versionElement) {
+        versionElement.textContent = this.APP_VERSION;
+      }
+    }
   }
 
   private hideAboutModal() {
@@ -860,7 +882,7 @@ class ConfigManager {
   }
 
   private async saveValueSet(method: string, path: string, configId: string) {
-    const pathId = path.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '');
+    const pathId = `${method.toLowerCase()}-${path.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '')}`;
     const nameInput = document.getElementById(`save-name-${method}-${pathId}`) as HTMLInputElement;
     const name = nameInput?.value?.trim();
     
@@ -868,6 +890,16 @@ class ConfigManager {
       this.showToast('Por favor, digite um nome para este conjunto de valores.', 'error');
       return;
     }
+
+    // Coletar path params atuais
+    const pathParams: Record<string, string> = {};
+    document.querySelectorAll(`[data-path-param="${method}-${pathId}"]`).forEach(input => {
+      const param = (input as HTMLInputElement).dataset.param;
+      const value = (input as HTMLInputElement).value;
+      if (param) {
+        pathParams[param] = value;
+      }
+    });
 
     // Coletar query params atuais
     const queryParams: Record<string, string> = {};
@@ -901,6 +933,7 @@ class ConfigManager {
       // Substituir o conjunto existente
       this.savedValueSets[configId][method][path][existingIndex] = {
         ...this.savedValueSets[configId][method][path][existingIndex],
+        pathParams,
         queryParams,
         body,
         createdAt: new Date().toISOString()
@@ -911,6 +944,7 @@ class ConfigManager {
       const savedSet: SavedValueSet = {
         id: Date.now().toString(),
         name,
+        pathParams,
         queryParams,
         body,
         createdAt: new Date().toISOString()
@@ -932,13 +966,23 @@ class ConfigManager {
   }
 
   private loadValueSet(method: string, path: string, configId: string, savedSetId: string) {
-    const pathId = path.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '');
+    const pathId = `${method.toLowerCase()}-${path.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '')}`;
     const savedSet = this.savedValueSets[configId]?.[method]?.[path]?.find(set => set.id === savedSetId);
     
     if (!savedSet) {
       console.error('Conjunto salvo não encontrado:', savedSetId);
       return;
     }
+
+    // Preencher path params
+    Object.entries(savedSet.pathParams).forEach(([param, value]) => {
+      const inputId = `path-param-${param}-${pathId}`;
+      const input = document.getElementById(inputId) as HTMLInputElement;
+      if (input) {
+        input.value = value;
+        input.setAttribute('value', value);
+      }
+    });
 
     // Preencher query params
     Object.entries(savedSet.queryParams).forEach(([param, value]) => {
@@ -962,7 +1006,7 @@ class ConfigManager {
   }
 
   private updateSavedSetsSelect(method: string, path: string, configId: string) {
-    const pathId = path.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '');
+    const pathId = `${method.toLowerCase()}-${path.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '')}`;
     const select = document.getElementById(`saved-sets-${method}-${pathId}`) as HTMLSelectElement;
     
     if (!select) return;
@@ -980,7 +1024,7 @@ class ConfigManager {
   }
 
   private async deleteValueSet(method: string, path: string, configId: string) {
-    const pathId = path.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '');
+    const pathId = `${method.toLowerCase()}-${path.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '')}`;
     const select = document.getElementById(`saved-sets-${method}-${pathId}`) as HTMLSelectElement;
     const selectedId = select?.value;
     
@@ -1044,9 +1088,88 @@ class ConfigManager {
     }
   }
 
+  private setupResponseSearch(method: string, path: string, _configId: string) {
+    // Event listeners para busca específica da resposta
+    // Usar a mesma lógica de geração de pathId do executeTest
+    const pathId = `${method.toLowerCase()}-${path.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '')}`;
+    
+    // IDs esperados
+    const expectedSearchInputId = `response-search-${pathId}`;
+    const expectedResponseContainerId = `response-${pathId}`;
+    const expectedSearchInfoId = `response-search-info-${pathId}`;
+    
+    // Tentar encontrar os elementos
+    const searchInput = document.getElementById(expectedSearchInputId) as HTMLInputElement;
+    const clearBtn = document.querySelector(`[data-search-input="${expectedSearchInputId}"]`) as HTMLButtonElement;
+    const responseContainer = document.getElementById(expectedResponseContainerId) as HTMLPreElement;
+    const searchInfo = document.getElementById(expectedSearchInfoId) as HTMLDivElement;
+
+    if (searchInput && clearBtn && responseContainer && searchInfo) {
+      let currentMatchIndex = 0;
+      let matches: HTMLElement[] = [];
+      let originalContent = responseContainer.innerHTML;
+
+      const performSearch = () => {
+        const searchTerm = searchInput.value.trim();
+        
+        if (!searchTerm) {
+          this.clearResponseHighlights(responseContainer, originalContent);
+          searchInfo.textContent = '';
+          matches = [];
+          currentMatchIndex = 0;
+          return;
+        }
+
+        const content = responseContainer.textContent || '';
+        const searchRegex = new RegExp(searchTerm, 'gi');
+        
+        if (searchRegex.test(content)) {
+          this.highlightResponseMatches(responseContainer, searchTerm, currentMatchIndex);
+          matches = Array.from(responseContainer.querySelectorAll('.response-highlight'));
+          searchInfo.textContent = matches.length > 0 ? `${currentMatchIndex + 1} de ${matches.length}` : 'Nenhum resultado';
+        } else {
+          this.clearResponseHighlights(responseContainer, originalContent);
+          searchInfo.textContent = 'Nenhum resultado';
+          matches = [];
+        }
+      };
+
+      const navigateResults = (direction: number) => {
+        if (matches.length === 0) return;
+        
+        currentMatchIndex = (currentMatchIndex + direction + matches.length) % matches.length;
+        searchInfo.textContent = `${currentMatchIndex + 1} de ${matches.length}`;
+        this.scrollToResponseMatch(matches[currentMatchIndex]);
+      };
+
+      // Event listeners
+      searchInput.addEventListener('input', performSearch);
+      
+      searchInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          if (e.shiftKey) {
+            navigateResults(-1);
+          } else {
+            navigateResults(1);
+          }
+        } else if (e.key === 'Escape') {
+          searchInput.value = '';
+          performSearch();
+        }
+      });
+
+      clearBtn.addEventListener('click', () => {
+        searchInput.value = '';
+        performSearch();
+        searchInput.focus();
+      });
+    }
+  }
+
   private async saveTestResult(method: string, path: string, configId: string, queryParams: Record<string, string>, body: string, response: TestResponse, timestamp: string) {
-    const pathId = path.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '');
-    const nameInput = document.getElementById(`result-name-${method}-${pathId}`) as HTMLInputElement;
+    const pathId = `${method.toLowerCase()}-${path.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '')}`;
+    const nameInput = document.getElementById(`result-name-${pathId}`) as HTMLInputElement;
     const name = nameInput?.value?.trim();
     
     if (!name) {
@@ -1107,6 +1230,17 @@ class ConfigManager {
               <option value="">Todos os endpoints</option>
             </select>
           </div>
+          <div class="history-controls">
+            <label for="history-search-input">Buscar nos resultados:</label>
+            <div class="history-search-container">
+              <input type="text" 
+                     id="history-search-input" 
+                     class="history-search-input" 
+                     placeholder="Buscar no nome, endpoint ou conteúdo...">
+              <button class="history-search-clear" title="Limpar busca">×</button>
+            </div>
+            <div class="history-search-info" id="history-search-info"></div>
+          </div>
           <div class="history-list">
             <div class="empty-state">Nenhum resultado salvo ainda.</div>
           </div>
@@ -1166,7 +1300,9 @@ class ConfigManager {
     // Mudança no select de endpoint
     const select = modal.querySelector('#history-endpoint-select') as HTMLSelectElement;
     select.addEventListener('change', () => {
-      this.displayHistoryResults(configId, select.value);
+      const searchInput = document.getElementById('history-search-input') as HTMLInputElement;
+      const searchFilter = searchInput?.value || '';
+      this.displayHistoryResults(configId, select.value, searchFilter);
       // Adicionar listeners para os novos botões de copiar
       this.attachCopyButtonsListeners();
       // Adicionar listeners para os novos botões de exclusão
@@ -1183,6 +1319,48 @@ class ConfigManager {
         });
       });
     });
+
+    // Event listeners para o campo de busca
+    const searchInput = modal.querySelector('#history-search-input') as HTMLInputElement;
+    const clearBtn = modal.querySelector('.history-search-clear') as HTMLButtonElement;
+    
+    if (searchInput && clearBtn) {
+      const performHistorySearch = () => {
+        const searchFilter = searchInput.value.trim();
+        const endpointFilter = select.value;
+        this.displayHistoryResults(configId, endpointFilter, searchFilter);
+        
+        // Re-adicionar listeners para os novos botões
+        this.attachCopyButtonsListeners();
+        modal.querySelectorAll('.delete-result-btn').forEach(btn => {
+          btn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            const target = e.target as HTMLElement;
+            const resultId = target.dataset.resultId;
+            const btnConfigId = target.dataset.configId;
+            
+            if (resultId && btnConfigId) {
+              await this.deleteSavedResult(resultId, btnConfigId);
+            }
+          });
+        });
+      };
+
+      searchInput.addEventListener('input', performHistorySearch);
+      
+      searchInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+          searchInput.value = '';
+          performHistorySearch();
+        }
+      });
+
+      clearBtn.addEventListener('click', () => {
+        searchInput.value = '';
+        performHistorySearch();
+        searchInput.focus();
+      });
+    }
 
     // Exibir todos os resultados inicialmente
     this.displayHistoryResults(configId, '');
@@ -1203,6 +1381,93 @@ class ConfigManager {
         }
       });
     });
+
+    // Adicionar event listeners para busca individual em cada resultado
+    this.setupHistoryResponseSearchListeners(modal, configId);
+  }
+
+  private setupHistoryResponseSearchListeners(modal: HTMLElement, configId: string) {
+    // Configurar busca para cada resultado individual no histórico
+    const results = this.savedResults[configId] || [];
+    
+    results.forEach(result => {
+      const searchInput = document.getElementById(`history-response-search-${result.id}`) as HTMLInputElement;
+      const clearBtn = document.querySelector(`[data-search-input="history-response-search-${result.id}"]`) as HTMLButtonElement;
+      const responseContainer = document.getElementById(`history-response-${result.id}`) as HTMLPreElement;
+      const searchInfo = document.getElementById(`history-response-search-info-${result.id}`) as HTMLDivElement;
+
+      if (searchInput && clearBtn && responseContainer && searchInfo) {
+        let currentMatchIndex = 0;
+        let matches: HTMLElement[] = [];
+        let originalContent = responseContainer.innerHTML;
+
+        const performSearch = () => {
+          const searchTerm = searchInput.value.trim();
+          
+          if (!searchTerm) {
+            // Restaurar conteúdo original
+            responseContainer.innerHTML = originalContent;
+            searchInfo.textContent = '';
+            matches = [];
+            currentMatchIndex = 0;
+            return;
+          }
+
+          const content = responseContainer.textContent || '';
+          const searchRegex = new RegExp(searchTerm, 'gi');
+          
+          if (searchRegex.test(content)) {
+            // Salvar conteúdo original se ainda não foi salvo
+            if (!responseContainer.dataset.originalContent) {
+              responseContainer.dataset.originalContent = originalContent;
+            }
+            
+            // Aplicar highlights
+            this.highlightResponseMatches(responseContainer, searchTerm, currentMatchIndex);
+            matches = Array.from(responseContainer.querySelectorAll('.response-highlight'));
+            searchInfo.textContent = matches.length > 0 ? `${currentMatchIndex + 1} de ${matches.length}` : 'Nenhum resultado';
+          } else {
+            // Restaurar conteúdo original
+            if (responseContainer.dataset.originalContent) {
+              responseContainer.innerHTML = responseContainer.dataset.originalContent;
+            }
+            searchInfo.textContent = 'Nenhum resultado';
+            matches = [];
+          }
+        };
+
+        const navigateResults = (direction: number) => {
+          if (matches.length === 0) return;
+          
+          currentMatchIndex = (currentMatchIndex + direction + matches.length) % matches.length;
+          searchInfo.textContent = `${currentMatchIndex + 1} de ${matches.length}`;
+          this.scrollToResponseMatch(matches[currentMatchIndex]);
+        };
+
+        // Event listeners
+        searchInput.addEventListener('input', performSearch);
+        
+        searchInput.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            if (e.shiftKey) {
+              navigateResults(-1);
+            } else {
+              navigateResults(1);
+            }
+          } else if (e.key === 'Escape') {
+            searchInput.value = '';
+            performSearch();
+          }
+        });
+
+        clearBtn.addEventListener('click', () => {
+          searchInput.value = '';
+          performSearch();
+          searchInput.focus();
+        });
+      }
+    });
   }
 
   private closeHistoryModal(modal: HTMLElement) {
@@ -1213,16 +1478,52 @@ class ConfigManager {
     }, 300);
   }
 
-  private displayHistoryResults(configId: string, endpointFilter: string) {
+  private displayHistoryResults(configId: string, endpointFilter: string, searchFilter: string = '') {
     const listContainer = document.querySelector('.history-list') as HTMLElement;
     if (!listContainer) return;
 
     const results = this.savedResults[configId] || [];
     
     // Filtrar por endpoint se necessário
-    const filteredResults = endpointFilter 
+    let filteredResults = endpointFilter 
       ? results.filter(result => `${result.endpoint.method} ${result.endpoint.path}` === endpointFilter)
       : results;
+
+    // Filtrar por termo de busca se necessário
+    if (searchFilter) {
+      const searchLower = searchFilter.toLowerCase();
+      filteredResults = filteredResults.filter(result => {
+        // Buscar no nome
+        if (result.name.toLowerCase().includes(searchLower)) return true;
+        
+        // Buscar no endpoint
+        const endpointKey = `${result.endpoint.method} ${result.endpoint.path}`;
+        if (endpointKey.toLowerCase().includes(searchLower)) return true;
+        
+        // Buscar no conteúdo da resposta
+        const responseContent = typeof result.response.data === 'string' 
+          ? result.response.data 
+          : JSON.stringify(result.response.data);
+        if (responseContent.toLowerCase().includes(searchLower)) return true;
+        
+        // Buscar nos query params
+        if (result.request.queryParams) {
+          const queryParamsStr = JSON.stringify(result.request.queryParams);
+          if (queryParamsStr.toLowerCase().includes(searchLower)) return true;
+        }
+        
+        // Buscar no body
+        if (result.request.body && result.request.body.toLowerCase().includes(searchLower)) return true;
+        
+        // Buscar nos headers
+        if (result.response.headers) {
+          const headersStr = JSON.stringify(result.response.headers);
+          if (headersStr.toLowerCase().includes(searchLower)) return true;
+        }
+        
+        return false;
+      });
+    }
 
     // Ordenar do mais recente para o mais antigo
     const sortedResults = filteredResults.sort((a, b) => 
@@ -1230,17 +1531,42 @@ class ConfigManager {
     );
 
     if (sortedResults.length === 0) {
-      listContainer.innerHTML = '<div class="empty-state">Nenhum resultado encontrado.</div>';
+      const emptyMessage = searchFilter 
+        ? `Nenhum resultado encontrado para "${searchFilter}".`
+        : endpointFilter 
+          ? 'Nenhum resultado encontrado para este endpoint.'
+          : 'Nenhum resultado encontrado.';
+      listContainer.innerHTML = `<div class="empty-state">${emptyMessage}</div>`;
+      
+      // Atualizar contador de resultados
+      const searchInfo = document.getElementById('history-search-info') as HTMLDivElement;
+      if (searchInfo) {
+        searchInfo.textContent = searchFilter ? `0 resultados` : '';
+      }
       return;
     }
+
+    // Destacar o termo de busca nos resultados
+    const highlightSearchTerm = (text: string) => {
+      if (!searchFilter) return this.escapeHtml(text);
+      
+      // Função para escapar caracteres especiais na regex
+      const escapeRegex = (str: string): string => {
+        return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      };
+      
+      const escapedSearchFilter = escapeRegex(searchFilter);
+      const regex = new RegExp(`(${escapedSearchFilter})`, 'gi');
+      return this.escapeHtml(text).replace(regex, '<span class="history-search-highlight">$1</span>');
+    };
 
     listContainer.innerHTML = sortedResults.map(result => `
       <div class="history-item collapsed" data-result-id="${result.id}">
         <div class="history-header" onclick="this.parentElement.classList.toggle('collapsed')">
           <div class="history-title">
-            <h4>${this.escapeHtml(result.name)}</h4>
+            <h4>${highlightSearchTerm(result.name)}</h4>
             <div class="history-meta">
-              <span class="history-endpoint">${result.endpoint.method} ${result.endpoint.path}</span>
+              <span class="history-endpoint">${highlightSearchTerm(`${result.endpoint.method} ${result.endpoint.path}`)}</span>
               <span class="history-timestamp">${new Date(result.timestamp).toLocaleString('pt-BR')}</span>
             </div>
           </div>
@@ -1287,6 +1613,17 @@ class ConfigManager {
                   <p><strong>Dados:</strong></p>
                   <button class="copy-btn" data-target="history-response-${result.id}">📋 Copiar</button>
                 </div>
+                <div class="history-response-search-container">
+                  <div class="history-response-search-header">
+                    <input type="text" 
+                           id="history-response-search-${result.id}" 
+                           class="history-response-search-input" 
+                           placeholder="Buscar nesta resposta..." 
+                           data-response-id="history-response-${result.id}">
+                    <button class="history-response-search-clear" data-search-input="history-response-search-${result.id}" title="Limpar busca">×</button>
+                  </div>
+                  <div class="history-response-search-info" id="history-response-search-info-${result.id}"></div>
+                </div>
                 <pre id="history-response-${result.id}">${this.escapeHtml(typeof result.response.data === 'string' ? result.response.data : JSON.stringify(result.response.data, null, 2))}</pre>
               </div>
             </div>
@@ -1294,14 +1631,36 @@ class ConfigManager {
         </div>
       </div>
     `).join('');
+
+    // Atualizar contador de resultados
+    const searchInfo = document.getElementById('history-search-info') as HTMLDivElement;
+    if (searchInfo) {
+      searchInfo.textContent = searchFilter ? `${sortedResults.length} resultado${sortedResults.length !== 1 ? 's' : ''}` : '';
+    }
   }
 
   private async executeTest(method: string, path: string, configId: string) {
     const config = this.configs.find(c => c.id === configId);
     if (!config) return;
 
+    // Coletar path params e substituir na URL
+    const pathId = `${method.toLowerCase()}-${path.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '')}`;
+    const pathParams: Record<string, string> = {};
+    document.querySelectorAll(`[data-path-param="${method}-${pathId}"]`).forEach(input => {
+      const param = (input as HTMLInputElement).dataset.param;
+      const value = (input as HTMLInputElement).value;
+      if (param) {
+        pathParams[param] = value;
+      }
+    });
+
+    // Substituir path parameters na URL
+    let processedPath = path;
+    Object.entries(pathParams).forEach(([param, value]) => {
+      processedPath = processedPath.replace(`{${param}}`, encodeURIComponent(value));
+    });
+
     // Coletar query params
-    const pathId = path.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '');
     const queryParams: Record<string, string> = {};
     document.querySelectorAll(`[data-query-param="${method}-${pathId}"]`).forEach(input => {
       const param = (input as HTMLInputElement).dataset.param;
@@ -1326,7 +1685,7 @@ class ConfigManager {
         ? '?' + Object.entries(queryParams).map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&')
         : '';
       
-      const fullUrl = `${baseUrl}${path}${queryString}`;
+      const fullUrl = `${baseUrl}${processedPath}${queryString}`;
 
       // Usar o proxy Tauri para fazer a requisição com autenticação
       const response: TestResponse = await invoke('make_test_request', {
@@ -1348,7 +1707,7 @@ class ConfigManager {
                 <div class="test-result-actions">
                   <input 
                     type="text" 
-                    id="result-name-${method}-${pathId}"
+                    id="result-name-${pathId}"
                     class="result-name-input"
                     placeholder="Nome do resultado..."
                     value="Resultado_${new Date().toLocaleString('pt-BR').replace(/[^\w]/g, '_')}"
@@ -1396,14 +1755,32 @@ class ConfigManager {
           <div class="test-response">
             <div class="section-header">
               <h6>Resposta:</h6>
-              <button class="copy-btn" data-target="response-${method}-${pathId}">📋 Copiar</button>
+              <button class="copy-btn" data-target="response-${pathId}">📋 Copiar</button>
             </div>
-            <pre id="response-${method}-${pathId}" class="test-response-data">${this.escapeHtml(typeof response.data === 'string' ? response.data : JSON.stringify(response.data, null, 2))}</pre>
+            <div class="response-search-container">
+              <div class="response-search-header">
+                <input type="text" 
+                       id="response-search-${pathId}" 
+                       class="response-search-input" 
+                       placeholder="Buscar na resposta..." 
+                       data-response-id="response-${pathId}">
+                <button class="response-search-clear" data-search-input="response-search-${pathId}" title="Limpar busca">×</button>
+              </div>
+              <div class="response-search-info" id="response-search-info-${pathId}"></div>
+            </div>
+            <pre id="response-${pathId}" class="test-response-data">${this.escapeHtml(typeof response.data === 'string' ? response.data : JSON.stringify(response.data, null, 2))}</pre>
           </div>
         </div>
       `;
 
-      // Adicionar event listeners para os novos botões
+      // Configurar event listeners para busca SEMPRE (independentemente de ter dados para salvar)
+      requestAnimationFrame(() => {
+        setTimeout(() => {
+          this.setupResponseSearch(method, path, configId);
+        }, 50);
+      });
+
+      // Adicionar event listeners para os novos botões (apenas se houver dados)
       if (hasData) {
         this.attachResultEventListeners(method, path, configId, queryParams, body, response, timestamp);
       }
@@ -1424,9 +1801,13 @@ class ConfigManager {
 
   private generateTestInterface(method: string, details: any, path: string, spec: any, configId: string): string {
     const queryParams = details.parameters?.filter((param: any) => param.in === 'query') || [];
+    const pathParams = details.parameters?.filter((param: any) => param.in === 'path') || [];
     const hasBody = ['POST', 'PUT', 'PATCH'].includes(method.toUpperCase());
     const exampleBody = this.generateExampleBody(details, spec);
-    const pathId = path.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '');
+    const pathId = `${method.toLowerCase()}-${path.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '')}`;
+    
+    // Verificar se há algo para salvar (path params, query params ou body)
+    const hasAnythingToSave = pathParams.length > 0 || queryParams.length > 0 || hasBody;
     
     // Armazenar valor padrão no mapa
     const bodyKey = `${method}-${pathId}`;
@@ -1434,6 +1815,31 @@ class ConfigManager {
 
     return `
       <div class="test-interface">
+        ${pathParams.length > 0 ? `
+          <div class="path-params">
+            <div class="section-header">
+              <h6>Path Parameters:</h6>
+              <button class="reset-btn" data-reset="path-${method}-${pathId}" title="Resetar Path Params">🔄</button>
+            </div>
+            ${pathParams.map((param: any) => `
+              <div class="param-input">
+                <label for="path-param-${param.name}-${pathId}">
+                  ${this.escapeHtml(param.name)} ${param.required ? '<span class="required">*</span>' : ''}
+                </label>
+                <input 
+                  type="text" 
+                  id="path-param-${param.name}-${pathId}"
+                  data-path-param="${method}-${pathId}"
+                  data-param="${param.name}"
+                  data-default="${this.escapeHtml(param.schema?.default?.toString() || '')}"
+                  placeholder="${this.escapeHtml(param.description || `Digite ${param.name}...`)}"
+                  value="${this.escapeHtml(param.schema?.default?.toString() || '')}"
+                  ${param.required ? 'required' : ''}
+                />
+              </div>
+            `).join('')}
+          </div>
+        ` : ''}
         ${queryParams.length > 0 ? `
           <div class="query-params">
             <div class="section-header">
@@ -1486,6 +1892,7 @@ class ConfigManager {
           </button>
         </div>
         
+        ${hasAnythingToSave ? `
         <div class="saved-sets-section">
           <h6>Conjuntos de Valores Salvos:</h6>
           <div class="save-set-controls">
@@ -1528,6 +1935,7 @@ class ConfigManager {
             </div>
           </div>
         </div>
+        ` : ''}
         
         <div id="test-result-${method}-${pathId}" class="test-result-container"></div>
       </div>
@@ -1699,7 +2107,20 @@ class ConfigManager {
   }
 
   private handleReset(resetType: string) {
-    if (resetType.startsWith('query-')) {
+    if (resetType.startsWith('path-')) {
+      // Resetar path params - formato: path-{method}-{pathId}
+      const parts = resetType.split('-');
+      const method = parts[1];
+      const pathId = parts.slice(2).join('-'); // Junta o resto com hífen
+      
+      const pathInputs = document.querySelectorAll(`[data-path-param="${method}-${pathId}"]`);
+      
+      pathInputs.forEach(input => {
+        const htmlInput = input as HTMLInputElement;
+        const defaultValue = htmlInput.dataset.default || '';
+        htmlInput.value = defaultValue;
+      });
+    } else if (resetType.startsWith('query-')) {
       // Resetar query params - formato: query-{method}-{pathId}
       const parts = resetType.split('-');
       const method = parts[1];
@@ -1725,6 +2146,109 @@ class ConfigManager {
         const defaultBody = this.defaultBodyValues.get(bodyKey) || '';
         bodyTextarea.value = defaultBody;
       }
+    }
+  }
+
+  // Métodos para busca específica de resposta
+  private clearResponseHighlights(container: HTMLElement, originalContent: string) {
+    // Usar o conteúdo original salvo no dataset se disponível
+    if (container.dataset.originalContent) {
+      container.innerHTML = container.dataset.originalContent;
+    } else {
+      container.innerHTML = originalContent;
+    }
+  }
+
+  private highlightResponseMatches(container: HTMLElement, searchTerm: string, currentIndex: number) {
+    // Salvar o conteúdo original se ainda não foi salvo
+    if (!container.dataset.originalContent) {
+      container.dataset.originalContent = container.innerHTML;
+    }
+    
+    // Restaurar conteúdo original antes de aplicar novos highlights
+    container.innerHTML = container.dataset.originalContent;
+    
+    // Verificar se há conteúdo para buscar
+    const textContent = container.textContent || '';
+    if (!textContent) {
+      return;
+    }
+    
+    // Função para escapar caracteres especiais no searchTerm
+    const escapeRegex = (str: string): string => {
+      return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    };
+    
+    const escapedSearchTerm = escapeRegex(searchTerm);
+    const searchRegex = new RegExp(escapedSearchTerm, 'gi');
+    
+    // Verificar se há matches
+    if (!searchRegex.test(textContent)) {
+      return;
+    }
+    
+    // Resetar regex para uso
+    searchRegex.lastIndex = 0;
+    
+    // Abordagem simples: usar mark.js style highlighting
+    const highlightRegex2 = new RegExp(`(${escapedSearchTerm})`, 'gi');
+    
+    // Substituir apenas em nós de texto para evitar quebrar HTML
+    // Esta é uma abordagem mais simples e robusta
+    const tempDiv = document.createElement('div');
+    tempDiv.innerHTML = container.innerHTML;
+    
+    const walker = document.createTreeWalker(
+      tempDiv,
+      NodeFilter.SHOW_TEXT,
+      null
+    );
+    
+    const textNodes: Text[] = [];
+    let node;
+    while (node = walker.nextNode()) {
+      if (node.textContent && highlightRegex2.test(node.textContent)) {
+        textNodes.push(node as Text);
+      }
+      highlightRegex2.lastIndex = 0;
+    }
+    
+    textNodes.forEach(textNode => {
+      const text = textNode.textContent || '';
+      const highlightedText = text.replace(highlightRegex2, '<span class="response-highlight">$1</span>');
+      
+      if (highlightedText !== text) {
+        const span = document.createElement('span');
+        span.innerHTML = highlightedText;
+        textNode.parentNode?.replaceChild(span, textNode);
+      }
+    });
+    
+    // Adicionar classe ao match atual
+    const highlights = tempDiv.querySelectorAll('.response-highlight');
+    highlights.forEach((highlight, index) => {
+      if (index === currentIndex) {
+        highlight.classList.add('current-response-match');
+      }
+    });
+    
+    // Atualizar o container com o conteúdo destacado
+    container.innerHTML = tempDiv.innerHTML;
+  }
+
+  private scrollToResponseMatch(matchElement: HTMLElement) {
+    matchElement.scrollIntoView({
+      behavior: 'smooth',
+      block: 'center'
+    });
+    
+    // Remover highlight anterior e adicionar ao atual
+    const container = matchElement.closest('.test-response-data');
+    if (container) {
+      container.querySelectorAll('.current-response-match').forEach(h => {
+        h.classList.remove('current-response-match');
+      });
+      matchElement.classList.add('current-response-match');
     }
   }
 }

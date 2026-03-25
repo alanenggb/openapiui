@@ -310,6 +310,20 @@ async fn load_app_data(app: tauri::AppHandle, key: String) -> Result<Option<serd
     }
 }
 
+#[tauri::command]
+async fn read_package_json() -> Result<String, String> {
+    use std::fs;
+    use std::path::Path;
+    
+    // Caminho relativo a partir do diretório src-tauri
+    let package_path = Path::new("../package.json");
+    
+    match fs::read_to_string(package_path) {
+        Ok(content) => Ok(content),
+        Err(e) => Err(format!("Failed to read package.json: {}", e))
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -361,7 +375,7 @@ pub fn run() {
             
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![greet, get_gcloud_token, fetch_openapi_spec, make_test_request, toggle_devtools, save_app_data, load_app_data])
+        .invoke_handler(tauri::generate_handler![greet, get_gcloud_token, fetch_openapi_spec, make_test_request, toggle_devtools, save_app_data, load_app_data, read_package_json])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
