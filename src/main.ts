@@ -386,7 +386,7 @@ class ConfigManager {
             <div class="config-info">
               <h3>${this.escapeHtml(config.name)}</h3>
               <p><strong>URL:</strong> ${this.escapeHtml(config.url)}</p>
-              <p><strong>Autenticação:</strong> ${config.useDefaultAuth ? 'Padrão' : 'Custom'}</p>
+              <p><strong>Autenticação:</strong> ${config.useDefaultAuth ? 'gcloud' : 'não'}</p>
             </div>
             <button 
               class="global-history-btn" 
