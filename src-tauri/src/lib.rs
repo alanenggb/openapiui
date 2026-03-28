@@ -5,7 +5,7 @@ use tauri::Manager;
 use std::os::windows::process::CommandExt;
 
 #[tauri::command]
-async fn fetch_openapi_spec(url: String, use_auth: bool) -> Result<serde_json::Value, String> {
+async fn fetch_openapi_spec(url: String, use_auth: bool, app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     use reqwest::Client;
     
     let client = Client::new();
@@ -13,7 +13,7 @@ async fn fetch_openapi_spec(url: String, use_auth: bool) -> Result<serde_json::V
     
     if use_auth {
         // Tentar obter o token gcloud
-        match get_gcloud_token().await {
+        match get_gcloud_token(app.clone()).await {
             Ok(token) => {
                 request = request
                     .header("Authorization", format!("Bearer {}", token))
@@ -51,7 +51,7 @@ async fn toggle_devtools(webview: tauri::WebviewWindow) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn make_test_request(url: String, method: String, body: Option<String>, use_auth: bool, headers: Option<std::collections::HashMap<String, String>>) -> Result<serde_json::Value, String> {
+async fn make_test_request(url: String, method: String, body: Option<String>, use_auth: bool, headers: Option<std::collections::HashMap<String, String>>, app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     use reqwest::Client;
     
     let client = Client::new();
@@ -66,7 +66,7 @@ async fn make_test_request(url: String, method: String, body: Option<String>, us
     
     // Adicionar headers de autenticação se necessário
     if use_auth {
-        match get_gcloud_token().await {
+        match get_gcloud_token(app.clone()).await {
             Ok(token) => {
                 request = request
                     .header("Authorization", format!("Bearer {}", token))
@@ -134,8 +134,55 @@ fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 #[tauri::command]
-async fn get_gcloud_token() -> Result<String, String> {
+async fn get_gcloud_token(app: tauri::AppHandle) -> Result<String, String> {
+    use tauri_plugin_store::StoreBuilder;
+
+    // Tentar carregar token cacheado
+    let store_result = StoreBuilder::new(&app, std::path::PathBuf::from("app-data.json")).build();
+    
+    if let Ok(store) = store_result {
+        if let Some(cached_data) = store.get("gcloud_token_cache") {
+            if let Some(token) = cached_data.get("token").and_then(|v| v.as_str()) {
+                if let Some(timestamp) = cached_data.get("timestamp").and_then(|v| v.as_u64()) {
+                    let current_time = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map_err(|e| format!("Failed to get current time: {}", e))?;
+                    
+                    // Verificar se o token tem menos de 30 minutos (1800 segundos)
+                    if current_time.as_secs() - timestamp < 1800 {
+                        return Ok(token.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    // Se chegou aqui, precisa gerar novo token
+    let new_token = generate_new_gcloud_token().await?;
+    
+    // Salvar novo token no cache com timestamp atual
+    let store_result = StoreBuilder::new(&app, std::path::PathBuf::from("app-data.json")).build();
+    if let Ok(store) = store_result {
+        let current_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| format!("Failed to get current time: {}", e))?;
+        
+        let cache_data = serde_json::json!({
+            "token": new_token,
+            "timestamp": current_time.as_secs()
+        });
+        
+        let _ = store.set("gcloud_token_cache", cache_data);
+        let _ = store.save();
+    }
+    
+    Ok(new_token)
+}
+
+async fn generate_new_gcloud_token() -> Result<String, String> {
     use tokio::process::Command;
     use std::env;
 
