@@ -47,7 +47,7 @@ async fn toggle_devtools(webview: tauri::WebviewWindow) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn make_test_request(url: String, method: String, body: Option<String>, use_auth: bool) -> Result<serde_json::Value, String> {
+async fn make_test_request(url: String, method: String, body: Option<String>, use_auth: bool, headers: Option<std::collections::HashMap<String, String>>) -> Result<serde_json::Value, String> {
     use reqwest::Client;
     
     let client = Client::new();
@@ -74,6 +74,13 @@ async fn make_test_request(url: String, method: String, body: Option<String>, us
         }
     }
     
+    // Adicionar headers personalizados
+    if let Some(custom_headers) = headers {
+        for (name, value) in custom_headers {
+            request = request.header(&name, &value);
+        }
+    }
+    
     // Adicionar body se fornecido
     let request = if let Some(body_str) = body {
         request.header("Content-Type", "application/json").body(body_str)
@@ -90,6 +97,13 @@ async fn make_test_request(url: String, method: String, body: Option<String>, us
     let status_code = status.as_u16();
     let status_text = status.canonical_reason().unwrap_or("Unknown");
     
+    // Coletar headers da resposta como um clone antes de consumir a response
+    let response_headers: std::collections::HashMap<String, String> = response
+        .headers()
+        .iter()
+        .filter_map(|(name, value)| value.to_str().ok().map(|v| (name.as_str().to_string(), v.to_string())))
+        .collect();
+    
     let response_text = response
         .text()
         .await
@@ -101,13 +115,10 @@ async fn make_test_request(url: String, method: String, body: Option<String>, us
         serde_json::from_str(&response_text).unwrap_or_else(|_| serde_json::Value::String(response_text))
     };
     
-    // Headers vazios por enquanto, já que não podemos acessar depois de consumir o response
-    let headers = std::collections::HashMap::<&str, &str>::new();
-    
     let result = serde_json::json!({
         "status": status_code,
         "statusText": status_text,
-        "headers": headers,
+        "headers": response_headers,
         "data": response_data
     });
     

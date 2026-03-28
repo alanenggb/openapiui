@@ -1,10 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 interface Configuration {
   id: string;
   name: string;
   url: string;
   useDefaultAuth: boolean;
+  headers: Array<{ name: string; value: string }>;
 }
 
 interface TestResponse {
@@ -65,6 +67,7 @@ class ConfigManager {
   private readonly SAVED_SETS_KEY = 'openapiui-saved-sets';
   private readonly SAVED_RESULTS_KEY = 'openapiui-saved-results';
   private readonly THEME_KEY = 'openapiui-theme';
+  private readonly FONT_SIZE_KEY = 'openapiui-font-size';
   private defaultBodyValues = new Map<string, string>();
   private readonly APP_VERSION = '0.1.0'; // Versão atual do aplicativo
 
@@ -73,10 +76,13 @@ class ConfigManager {
     nameInput: document.querySelector("#config-name") as HTMLInputElement,
     urlInput: document.querySelector("#config-url") as HTMLInputElement,
     authCheckbox: document.querySelector("#config-auth") as HTMLInputElement,
+    headersList: document.querySelector("#headers-list") as HTMLDivElement,
+    addHeaderBtn: document.querySelector("#add-header-btn") as HTMLButtonElement,
     submitBtn: document.querySelector("#submit-btn") as HTMLButtonElement,
     cancelBtn: document.querySelector("#cancel-btn") as HTMLButtonElement,
     configsList: document.querySelector("#configs-list") as HTMLDivElement,
     configSelect: document.querySelector("#config-select") as HTMLSelectElement,
+    fontSizeSelect: document.querySelector("#font-size-select") as HTMLSelectElement,
     reloadSpecBtn: document.querySelector("#reload-spec-btn") as HTMLButtonElement,
     editConfigsBtn: document.querySelector("#edit-configs-btn") as HTMLButtonElement,
     devtoolsBtn: document.querySelector("#devtools-btn") as HTMLButtonElement,
@@ -94,11 +100,15 @@ class ConfigManager {
       this.loadConfigs(),
       this.loadSavedValueSets(),
       this.loadSavedResults(),
-      this.loadTheme()
+      this.loadTheme(),
+      this.loadFontSize()
     ]);
     this.setupEventListeners();
     this.updateConfigSelect();
     this.renderConfigs();
+    
+    // Atualizar título da janela ao iniciar
+    await this.updateWindowTitle();
   }
 
   private setupEventListeners() {
@@ -110,6 +120,11 @@ class ConfigManager {
 
     this.elements.cancelBtn.addEventListener("click", () => {
       this.resetForm();
+    });
+
+    // Botão de adicionar header
+    this.elements.addHeaderBtn.addEventListener("click", () => {
+      this.addHeaderField();
     });
 
     // Modal
@@ -127,6 +142,12 @@ class ConfigManager {
 
     this.elements.themeToggleBtn.addEventListener("click", () => {
       this.toggleTheme();
+    });
+
+    this.elements.fontSizeSelect.addEventListener("change", (e) => {
+      const target = e.target as HTMLSelectElement;
+      const fontSize = parseFloat(target.value);
+      this.setFontSize(fontSize);
     });
 
     // Modal Sobre
@@ -342,6 +363,9 @@ class ConfigManager {
   }
 
   private async handleConfigSelection(configId: string) {
+    // Atualizar título da janela
+    await this.updateWindowTitle();
+    
     if (!configId) {
       this.elements.welcomeScreen.style.display = 'block';
       this.elements.welcomeScreen.innerHTML = `
@@ -713,6 +737,7 @@ class ConfigManager {
     const name = this.elements.nameInput.value.trim();
     const url = this.elements.urlInput.value.trim();
     const useDefaultAuth = this.elements.authCheckbox.checked;
+    const headers = this.getHeadersFromForm();
 
     if (!name || !url) {
       return;
@@ -725,7 +750,8 @@ class ConfigManager {
           id: this.editingId,
           name,
           url,
-          useDefaultAuth
+          useDefaultAuth,
+          headers
         };
       }
     } else {
@@ -733,7 +759,8 @@ class ConfigManager {
         id: Date.now().toString(),
         name,
         url,
-        useDefaultAuth
+        useDefaultAuth,
+        headers
       };
       this.configs.push(newConfig);
     }
@@ -746,6 +773,7 @@ class ConfigManager {
 
   private resetForm() {
     this.elements.configForm.reset();
+    this.clearHeaderFields();
     this.editingId = null;
     this.elements.submitBtn.textContent = 'Adicionar Configuração';
     this.elements.cancelBtn.classList.add('hidden');
@@ -763,6 +791,14 @@ class ConfigManager {
           <h4>${this.escapeHtml(config.name)}</h4>
           <p><strong>URL:</strong> ${this.escapeHtml(config.url)}</p>
           <p><strong>Autenticação:</strong> ${config.useDefaultAuth ? 'Padrão' : 'Custom'}</p>
+          ${config.headers && config.headers.length > 0 ? `
+            <p><strong>Headers:</strong></p>
+            <div class="config-headers">
+              ${config.headers.map(header => 
+                `<span class="config-header">${this.escapeHtml(header.name)}: ${this.escapeHtml(header.value)}</span>`
+              ).join('')}
+            </div>
+          ` : ''}
         </div>
         <div class="config-actions">
           <button class="edit-btn" data-id="${config.id}">Editar</button>
@@ -798,6 +834,17 @@ class ConfigManager {
     this.elements.nameInput.value = config.name;
     this.elements.urlInput.value = config.url;
     this.elements.authCheckbox.checked = config.useDefaultAuth;
+    
+    // Limpar campos de header existentes
+    this.clearHeaderFields();
+    
+    // Carregar headers existentes
+    if (config.headers && config.headers.length > 0) {
+      config.headers.forEach(header => {
+        this.addHeaderField(header.name, header.value);
+      });
+    }
+    
     this.elements.submitBtn.textContent = 'Atualizar Configuração';
     this.elements.cancelBtn.classList.remove('hidden');
     
@@ -1687,12 +1734,28 @@ class ConfigManager {
       
       const fullUrl = `${baseUrl}${processedPath}${queryString}`;
 
-      // Usar o proxy Tauri para fazer a requisição com autenticação
+      // Processar headers personalizados com suporte a UUID
+      const processedHeaders: Record<string, string> = {};
+      if (config.headers && config.headers.length > 0) {
+        config.headers.forEach(header => {
+          if (header.name && header.value) {
+            // Se o valor for exatamente "uuid", gerar um UUID
+            if (header.value.toLowerCase() === 'uuid') {
+              processedHeaders[header.name] = this.generateUUID();
+            } else {
+              processedHeaders[header.name] = header.value;
+            }
+          }
+        });
+      }
+
+      // Usar o proxy Tauri para fazer a requisição com autenticação e headers
       const response: TestResponse = await invoke('make_test_request', {
         url: fullUrl,
         method: method.toUpperCase(),
         body: body,
-        useAuth: config.useDefaultAuth
+        useAuth: config.useDefaultAuth,
+        headers: processedHeaders
       });
 
       const timestamp = new Date().toISOString();
@@ -1736,7 +1799,7 @@ class ConfigManager {
             ${response.headers ? `
               <div class="test-headers-section">
                 <div class="section-header">
-                  <p><strong>Headers enviados:</strong></p>
+                  <p><strong>Response Headers:</strong></p>
                   <button class="copy-btn" data-target="headers-${method}-${pathId}">📋 Copiar</button>
                 </div>
                 <pre id="headers-${method}-${pathId}" class="test-headers">${this.escapeHtml(JSON.stringify(response.headers, null, 2))}</pre>
@@ -2005,6 +2068,24 @@ class ConfigManager {
     return this.elements.configSelect.value || '';
   }
 
+  private async updateWindowTitle() {
+    try {
+      const currentConfigId = this.getCurrentConfigId();
+      let title = 'OpenAPIUI';
+      
+      if (currentConfigId) {
+        const config = this.configs.find(c => c.id === currentConfigId);
+        if (config) {
+          title = `OpenAPIUI - ${config.name}`;
+        }
+      }
+      
+      await getCurrentWindow().setTitle(title);
+    } catch (error) {
+      console.error('Failed to update window title:', error);
+    }
+  }
+
   private showToast(message: string, type: 'success' | 'error' = 'success') {
     // Criar elemento do toast
     const toast = document.createElement('div');
@@ -2089,6 +2170,25 @@ class ConfigManager {
       document.documentElement.removeAttribute('data-theme');
       this.elements.themeToggleBtn.textContent = '☀️';
     }
+  }
+
+  private async loadFontSize() {
+    try {
+      const savedFontSize = localStorage.getItem(this.FONT_SIZE_KEY);
+      const fontSize = savedFontSize ? parseFloat(savedFontSize) : 1;
+      this.setFontSize(fontSize);
+      this.elements.fontSizeSelect.value = fontSize.toString();
+    } catch (error) {
+      console.error('Failed to load font size:', error);
+      // Tamanho padrão (médio)
+      this.setFontSize(1);
+      this.elements.fontSizeSelect.value = '1';
+    }
+  }
+
+  private setFontSize(multiplier: number) {
+    document.documentElement.style.setProperty('--font-size-multiplier', multiplier.toString());
+    localStorage.setItem(this.FONT_SIZE_KEY, multiplier.toString());
   }
 
   private toggleTheme() {
@@ -2250,6 +2350,77 @@ class ConfigManager {
       });
       matchElement.classList.add('current-response-match');
     }
+  }
+
+  private addHeaderField(name: string = '', value: string = '') {
+    const headerId = Date.now().toString();
+    const headerElement = document.createElement('div');
+    headerElement.className = 'header-item';
+    headerElement.dataset.headerId = headerId;
+    
+    headerElement.innerHTML = `
+      <div class="header-row">
+        <input 
+          type="text" 
+          class="header-name" 
+          placeholder="Nome do header" 
+          value="${this.escapeHtml(name)}"
+        />
+        <input 
+          type="text" 
+          class="header-value" 
+          placeholder="Valor (use 'uuid' para gerar automaticamente)" 
+          value="${this.escapeHtml(value)}"
+        />
+        <button type="button" class="remove-header-btn" data-header-id="${headerId}">Remover</button>
+      </div>
+    `;
+    
+    this.elements.headersList.appendChild(headerElement);
+    
+    // Adicionar event listener para o botão de remover
+    const removeBtn = headerElement.querySelector('.remove-header-btn') as HTMLButtonElement;
+    removeBtn.addEventListener('click', () => {
+      this.removeHeaderField(headerId);
+    });
+  }
+
+  private removeHeaderField(headerId: string) {
+    const headerElement = this.elements.headersList.querySelector(`[data-header-id="${headerId}"]`);
+    if (headerElement) {
+      headerElement.remove();
+    }
+  }
+
+  private getHeadersFromForm(): Array<{ name: string; value: string }> {
+    const headers: Array<{ name: string; value: string }> = [];
+    
+    this.elements.headersList.querySelectorAll('.header-item').forEach(item => {
+      const nameInput = item.querySelector('.header-name') as HTMLInputElement;
+      const valueInput = item.querySelector('.header-value') as HTMLInputElement;
+      
+      if (nameInput && valueInput && nameInput.value.trim()) {
+        headers.push({
+          name: nameInput.value.trim(),
+          value: valueInput.value.trim()
+        });
+      }
+    });
+    
+    return headers;
+  }
+
+  private clearHeaderFields() {
+    this.elements.headersList.innerHTML = '';
+  }
+
+  private generateUUID(): string {
+    // Implementação simples de UUID v4
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+      const r = Math.random() * 16 | 0;
+      const v = c === 'x' ? r : (r & 0x3 | 0x8);
+      return v.toString(16);
+    });
   }
 }
 

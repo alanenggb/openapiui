@@ -13,6 +13,13 @@
       <div class="menu-container">
         <h1 class="app-title">OpenAPI UI</h1>
         <div class="menu-controls">
+          <select id="font-size-select" class="font-size-select" title="Tamanho da fonte">
+            <option value="0.7">Mini</option>
+            <option value="0.85">Pequeno</option>
+            <option value="1" selected>Médio</option>
+            <option value="1.15">Grande</option>
+            <option value="1.3">Gigante</option>
+          </select>
           <select id="config-select" class="config-select">
             <option value="">Selecione uma configuração</option>
           </select>
@@ -56,6 +63,18 @@
                 <input id="config-auth" type="checkbox" />
                 <label for="config-auth">Usar Autenticação Padrão</label>
               </div>
+              
+              <div class="form-group">
+                <label>Headers Personalizados</label>
+                <div id="headers-container" class="headers-container">
+                  <div class="headers-list" id="headers-list">
+                    <!-- Headers serão adicionados dinamicamente aqui -->
+                  </div>
+                  <button type="button" id="add-header-btn" class="add-header-btn">+ Adicionar Header</button>
+                </div>
+                <small class="form-help">Adicione headers personalizados. Use "uuid" como valor para gerar um UUID automaticamente a cada requisição.</small>
+              </div>
+              
               <div class="form-actions">
                 <button type="submit" id="submit-btn">Adicionar Configuração</button>
                 <button type="button" id="cancel-btn" class="hidden">Cancelar</button>
@@ -102,12 +121,12 @@
             
             <div class="tech-info">
               <h4>Tecnologia</h4>
-              <p>Desenvolvido com Tauri, TypeScript e tecnologias web modernas.</p>
+              <p>Desenvolvido com Tauri e TypeScript.</p>
             </div>
             
             <div class="license-info">
-              <h4>Licença</h4>
-              <p>Verifique o repositório para informações sobre licenciamento.</p>
+              <h4>Licença MIT</h4>
+              <p>Verifique o repositório para mais informações.</p>
             </div>
           </div>
         </div>
