@@ -5,6 +5,7 @@ use sqlx::postgres::{PgConnectOptions};
 use std::sync::Arc;
 use std::collections::HashMap;
 use tokio::sync::Mutex;
+use std::time::Duration;
 
 #[cfg(windows)]
 #[allow(unused_imports)]
@@ -48,6 +49,7 @@ struct TestResultRecord {
 }
 
 #[derive(Debug, Deserialize, Clone, Serialize)]
+#[allow(dead_code)]
 struct QueryParam {
     name: String,
     #[serde(rename = "type")]
@@ -57,6 +59,7 @@ struct QueryParam {
 }
 
 #[derive(Debug, Deserialize, Clone, Serialize)]
+#[allow(dead_code)]
 struct CustomEndpoint {
     id: String,
     config_id: String,
@@ -72,6 +75,7 @@ struct CustomEndpoint {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[allow(dead_code)]
 struct ConfigurationRecord {
     id: String,
     name: String,
@@ -95,6 +99,48 @@ struct PostgresConnectionCache {
 #[derive(Clone)]
 struct PostgresConfigCache {
     configs: Arc<Mutex<HashMap<String, PostgresConfig>>>,
+}
+
+// Constantes de segurança
+const MAX_OPENAPI_SIZE: usize = 5 * 1024 * 1024; // 5MB
+const REQUEST_TIMEOUT: u64 = 30; // 30 segundos
+
+// Função de validação de estrutura OpenAPI básica
+fn validate_openapi_schema(spec: &serde_json::Value) -> Result<(), String> {
+    use jsonschema::validator_for;
+    
+    let schema = serde_json::json!({
+        "type": "object",
+        "required": ["openapi", "info", "paths"],
+        "properties": {
+            "openapi": {"type": "string"},
+            "info": {
+                "type": "object",
+                "required": ["title", "version"],
+                "properties": {
+                    "title": {"type": "string", "maxLength": 100},
+                    "version": {"type": "string", "maxLength": 50},
+                    "description": {"type": "string", "maxLength": 1000}
+                }
+            },
+            "paths": {"type": "object"}
+        },
+        "additionalProperties": true  // Permitir extensões customizadas
+    });
+    
+    let validator = validator_for(&schema)
+        .map_err(|e| format!("Failed to create OpenAPI schema validator: {}", e))?;
+    
+    validator.validate(spec)
+        .map_err(|validation_errors: jsonschema::ValidationError| {
+            let mut errors = Vec::new();
+            let error_str = format!("{}", validation_errors);
+            let path_str = format!("{}", validation_errors.instance_path());
+            errors.push(format!("{} at {}", error_str, path_str));
+            format!("OpenAPI schema validation failed: {}", errors.join(", "))
+        })?;
+    
+    Ok(())
 }
 
 impl PostgresConnectionCache {
@@ -353,7 +399,12 @@ async fn fetch_postgres_config_from_gcp(secret_name: &str) -> Result<PostgresCon
 async fn fetch_openapi_spec(url: String, use_auth: bool, app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     use reqwest::Client;
     
-    let client = Client::new();
+    // Configurar cliente com limites de segurança
+    let client = Client::builder()
+        .timeout(Duration::from_secs(REQUEST_TIMEOUT))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+    
     let mut request = client.get(&url);
     
     if use_auth {
@@ -370,7 +421,7 @@ async fn fetch_openapi_spec(url: String, use_auth: bool, app: tauri::AppHandle) 
         }
     }
     
-    let response = request
+    let response: reqwest::Response = request
         .send()
         .await
         .map_err(|e| format!("Failed to send request: {}", e))?;
@@ -380,10 +431,20 @@ async fn fetch_openapi_spec(url: String, use_auth: bool, app: tauri::AppHandle) 
         return Err(format!("HTTP {}: {}", status.as_u16(), status.canonical_reason().unwrap_or("Unknown")));
     }
     
-    let json = response
+    // Verificar tamanho do conteúdo antes de processar
+    let content_length = response.content_length().unwrap_or(0);
+    if content_length > MAX_OPENAPI_SIZE as u64 {
+        return Err(format!("OpenAPI specification too large: {} bytes (max: {} bytes)", content_length, MAX_OPENAPI_SIZE));
+    }
+    
+    // Limitar tamanho do response body
+    let json: serde_json::Value = response
         .json::<serde_json::Value>()
         .await
         .map_err(|e| format!("Failed to parse JSON response: {}", e))?;
+    
+    // Validar estrutura básica do OpenAPI
+    validate_openapi_schema(&json)?;
     
     Ok(json)
 }
@@ -480,6 +541,7 @@ fn greet(name: &str) -> String {
 }
 
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[tauri::command]
 async fn get_gcloud_token(app: tauri::AppHandle) -> Result<String, String> {
@@ -2272,14 +2334,67 @@ pub fn run() {
                             if let Some(width) = state.get("width").and_then(|v: &serde_json::Value| v.as_f64()) {
                                 if let Some(height) = state.get("height").and_then(|v: &serde_json::Value| v.as_f64()) {
                                     let maximized = state.get("maximized").and_then(|v| v.as_bool()).unwrap_or(false);
-
-                                    // Aplicar posição salva
-                                    let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x: x as i32, y: y as i32 }));
-
+                                    
                                     // Aplicar tamanho com pequeno ajuste para compensar barras do sistema
                                     let adjusted_width = (width as u32).saturating_sub(16); // Compensar bordas
                                     let adjusted_height = (height as u32).saturating_sub(8); // Compensar bordas
-                                    let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize { width: adjusted_width, height: adjusted_height }));
+                                    
+                                    // Validar se a posição salva é válida
+                                    let position_valid = {
+                                        let monitors = app.available_monitors().unwrap_or_default();
+                                        let mut valid = false;
+                                        
+                                        for monitor in monitors {
+                                            let monitor_pos = monitor.position();
+                                            let monitor_size = monitor.size();
+                                            
+                                            // Calcular intersecção entre janela e monitor
+                                            let window_right = x as i32 + adjusted_width as i32;
+                                            let window_bottom = y as i32 + adjusted_height as i32;
+                                            let monitor_right = monitor_pos.x + monitor_size.width as i32;
+                                            let monitor_bottom = monitor_pos.y + monitor_size.height as i32;
+                                            
+                                            // Verificar se há intersecção (não vazia)
+                                            let intersect_width = (window_right - monitor_pos.x).min(monitor_right - x as i32).max(0);
+                                            let intersect_height = (window_bottom - monitor_pos.y).min(monitor_bottom - y as i32).max(0);
+                                            
+                                            if intersect_width > 0 && intersect_height > 0 {
+                                                valid = true;
+                                                break;
+                                            }
+                                        }
+                                        
+                                        valid
+                                    };
+                                    
+                                    if position_valid {
+                                        // Aplicar posição salva se for válida
+                                        let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x: x as i32, y: y as i32 }));
+                                        let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize { width: adjusted_width, height: adjusted_height }));
+                                        println!("Window restored to saved position: ({}, {}) with size {}x{}", x, y, adjusted_width, adjusted_height);
+                                    } else {
+                                        // Posição inválida, mover para monitor primário
+                                        println!("Saved window position ({}, {}) is invalid, moving to primary monitor", x, y);
+                                        match app.primary_monitor() {
+                                            Ok(Some(monitor)) => {
+                                                let monitor_pos = monitor.position();
+                                                let monitor_size = monitor.size();
+                                                
+                                                // Calcular posição centralizada no monitor primário
+                                                let center_x = monitor_pos.x + ((monitor_size.width as i32 - adjusted_width as i32) / 2).max(0);
+                                                let center_y = monitor_pos.y + ((monitor_size.height as i32 - adjusted_height as i32) / 2).max(0);
+                                                
+                                                let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x: center_x, y: center_y }));
+                                                let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize { width: adjusted_width, height: adjusted_height }));
+                                                println!("Window moved to primary monitor at ({}, {}) with size {}x{}", center_x, center_y, adjusted_width, adjusted_height);
+                                            }
+                                            _ => {
+                                                println!("Failed to get primary monitor, using default positioning");
+                                                let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x: 100, y: 100 }));
+                                                let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize { width: adjusted_width, height: adjusted_height }));
+                                            }
+                                        }
+                                    }
 
                                     // Restaurar estado maximizado se estava salvo
                                     if maximized {
@@ -2294,9 +2409,98 @@ pub fn run() {
                 // Salvar estado da janela quando mover ou redimensionar
                 let store_clone = store.clone();
                 let window_clone = window.clone();
+                let is_fallback_position = Arc::new(AtomicBool::new(false));
+                let is_fallback_clone = is_fallback_position.clone();
+                
+                // Detectar mudanças de monitores
+                let app_handle = app.handle();
+                let mut last_monitor_count = app_handle.available_monitors().unwrap_or_default().len();
+                
+                // Iniciar timer para verificar mudanças de monitores
+                let monitor_check_window = window.clone();
+                let monitor_check_fallback = is_fallback_position.clone();
+                
+                tauri::async_runtime::spawn(async move {
+                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(5)); // Verificar a cada 5 segundos
+                    
+                    loop {
+                        interval.tick().await;
+                        
+                        if let Ok(current_monitors) = monitor_check_window.app_handle().available_monitors() {
+                            let current_count = current_monitors.len();
+                            
+                            if current_count != last_monitor_count {
+                                println!("Monitor count changed from {} to {}, checking window position", last_monitor_count, current_count);
+                                last_monitor_count = current_count;
+                                
+                                // Validar posição atual da janela
+                                if let Ok(pos) = monitor_check_window.outer_position() {
+                                    if let Ok(size) = monitor_check_window.outer_size() {
+                                        let mut position_valid = false;
+                                        
+                                        for monitor in &current_monitors {
+                                            let monitor_pos = monitor.position();
+                                            let monitor_size = monitor.size();
+                                            
+                                            let window_right = pos.x + size.width as i32;
+                                            let window_bottom = pos.y + size.height as i32;
+                                            let monitor_right = monitor_pos.x + monitor_size.width as i32;
+                                            let monitor_bottom = monitor_pos.y + monitor_size.height as i32;
+                                            
+                                            let intersect_width = (window_right - monitor_pos.x).min(monitor_right - pos.x).max(0);
+                                            let intersect_height = (window_bottom - monitor_pos.y).min(monitor_bottom - pos.y).max(0);
+                                            
+                                            if intersect_width > 0 && intersect_height > 0 {
+                                                position_valid = true;
+                                                break;
+                                            }
+                                        }
+                                        
+                                        if !position_valid {
+                                            println!("Window position became invalid after monitor change, moving to primary monitor");
+                                            
+                                            // Marcar como posição de fallback para não salvar
+                                            monitor_check_fallback.store(true, Ordering::SeqCst);
+                                            
+                                            match monitor_check_window.app_handle().primary_monitor() {
+                                                Ok(Some(monitor)) => {
+                                                    let monitor_pos = monitor.position();
+                                                    let monitor_size = monitor.size();
+                                                    
+                                                    let center_x = monitor_pos.x + ((monitor_size.width as i32 - size.width as i32) / 2).max(0);
+                                                    let center_y = monitor_pos.y + ((monitor_size.height as i32 - size.height as i32) / 2).max(0);
+                                                    
+                                                    let _ = monitor_check_window.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x: center_x, y: center_y }));
+                                                    println!("Window moved to primary monitor due to monitor configuration change");
+                                                    
+                                                    // Resetar flag após um tempo
+                                                    let fallback_reset = monitor_check_fallback.clone();
+                                                    tauri::async_runtime::spawn(async move {
+                                                        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                                                        fallback_reset.store(false, Ordering::SeqCst);
+                                                    });
+                                                }
+                                                _ => {
+                                                    println!("Failed to get primary monitor during monitor change");
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+                
                 window.on_window_event(move |event| {
                     match event {
                         tauri::WindowEvent::Resized(_) => {
+                            // Não salvar se for posição de fallback
+                            if is_fallback_clone.load(Ordering::SeqCst) {
+                                println!("Skipping save during fallback positioning");
+                                return;
+                            }
+                            
                             if let Ok(pos) = window_clone.outer_position() {
                                 if let Ok(size) = window_clone.outer_size() {
                                     let is_maximized = window_clone.is_maximized().unwrap_or(false);
@@ -2313,6 +2517,12 @@ pub fn run() {
                             }
                         }
                         tauri::WindowEvent::Moved(_) => {
+                            // Não salvar se for posição de fallback
+                            if is_fallback_clone.load(Ordering::SeqCst) {
+                                println!("Skipping save during fallback positioning");
+                                return;
+                            }
+                            
                             if let Ok(pos) = window_clone.outer_position() {
                                 if let Ok(size) = window_clone.outer_size() {
                                     let is_maximized = window_clone.is_maximized().unwrap_or(false);

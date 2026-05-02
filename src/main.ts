@@ -59,6 +59,11 @@ interface EndpointSavedSets {
   };
 }
 
+interface ExtendedHTMLTextAreaElement extends HTMLTextAreaElement {
+  _bodyAnalysisListener?: ((event: Event) => void);
+  _analysisTimeout?: number;
+}
+
 interface SavedResult {
   id: string;
   name: string;
@@ -107,6 +112,7 @@ class ConfigManager {
   private databaseError: string | null = null; // Armazena erro de acesso ao banco de dados
   private pendingConfig: Configuration | null = null; // Configuração pendente de sincronização
   private databaseSecrets: string[] = []; // Lista de nomes de secrets de banco de dados
+  private isLoadingConfig: boolean = false; // Track when a config is being loaded
 
   private elements = {
     configForm: document.querySelector("#config-form") as HTMLFormElement,
@@ -177,6 +183,16 @@ class ConfigManager {
     databaseSecretsList: document.querySelector("#database-secrets-list") as HTMLDivElement,
   };
 
+  private getResponseStatusClass(status: number): string {
+    if (status >= 200 && status < 300) {
+      return 'success';
+    } else if (status >= 400 && status < 600) {
+      return 'http-error';
+    } else {
+      return 'error';
+    }
+  }
+
   async init() {
     await Promise.all([
       this.loadConfigs(),
@@ -196,6 +212,9 @@ class ConfigManager {
     
     // Verificar updates ao iniciar
     this.checkForUpdatesOnStartup();
+    
+    // Configurar análise em tempo real do body
+    this.setupRealTimeBodyAnalysis();
     
     // Configurar verificação periódica (24h)
     this.setupPeriodicUpdateCheck();
@@ -351,6 +370,17 @@ class ConfigManager {
     // Select de configurações
     this.elements.configSelect.addEventListener("change", (e) => {
       const selectedId = (e.target as HTMLSelectElement).value;
+      
+      // Prevent selection if already loading a config
+      if (this.isLoadingConfig) {
+        e.preventDefault();
+        // Restore previous selection
+        const currentConfig = this.getCurrentConfigId();
+        this.elements.configSelect.value = currentConfig || '';
+        this.showToast('Aguarde o carregamento da configuração atual...', 'error');
+        return;
+      }
+      
       this.handleConfigSelection(selectedId);
     });
 
@@ -358,6 +388,11 @@ class ConfigManager {
     this.elements.reloadSpecBtn.addEventListener("click", () => {
       const selectedId = this.elements.configSelect.value;
       if (selectedId) {
+        // Prevent reload if already loading a config
+        if (this.isLoadingConfig) {
+          this.showToast('Aguarde o carregamento da configuração atual...', 'error');
+          return;
+        }
         this.handleConfigSelection(selectedId);
       }
     });
@@ -869,110 +904,120 @@ class ConfigManager {
   }
 
   private async handleConfigSelection(configId: string) {
-    // Atualizar título da janela
-    await this.updateWindowTitle();
-    
-    // Resetar erro de banco de dados ao selecionar nova configuração
-    this.databaseError = null;
-    
-    if (!configId) {
-      this.elements.welcomeScreen.style.display = 'block';
-      this.elements.welcomeScreen.innerHTML = `
-        <h2>Boas vindas ao EasyOpenAPI</h2>
-        <p>Selecione uma configuração no menu superior ou clique em "Editar Configurações" para gerenciar suas APIs.</p>
-      `;
-      this.elements.reloadSpecBtn.disabled = true;
-      return;
-    }
+    try {
+      // Set loading state
+      this.isLoadingConfig = true;
+      this.elements.configSelect.disabled = true;
+      
+      // Atualizar título da janela
+      await this.updateWindowTitle();
+      
+      // Resetar erro de banco de dados ao selecionar nova configuração
+      this.databaseError = null;
+      
+      if (!configId) {
+        this.elements.welcomeScreen.style.display = 'block';
+        this.elements.welcomeScreen.innerHTML = `
+          <h2>Boas vindas ao EasyOpenAPI</h2>
+          <p>Selecione uma configuração no menu superior ou clique em "Editar Configurações" para gerenciar suas APIs.</p>
+        `;
+        this.elements.reloadSpecBtn.disabled = true;
+        return;
+      }
 
-    this.elements.reloadSpecBtn.disabled = false;
+      this.elements.reloadSpecBtn.disabled = false;
 
-    const config = this.configs.find(c => c.id === configId);
-    if (config) {
-      // Verificar se há erro de secret antes de renderizar
-      let databaseStatusMessage = '';
-      if (config.databaseName) {
-        try {
-          // Tentar acessar o banco para verificar se o secret está acessível
-          await invoke('list_postgres_results', {
-            secretName: config.databaseName,
-            configId
-          });
-          databaseStatusMessage = `<div class="database-success">✅ Secret OK e conexão bem-sucedida</div>`;
-        } catch (error) {
-          console.error('Failed to load database results:', error);
-          const errorMessage = String(error);
-          
-          if (errorMessage.includes('NOT_FOUND') && errorMessage.includes('Secret')) {
-            this.databaseError = `Erro ao acessar secret "${config.databaseName}": Secret não encontrado ou sem permissão. Verifique a configuração no GCP.`;
-            databaseStatusMessage = `<div class="database-error">⚠️ ${this.escapeHtml(this.databaseError)}</div>`;
-          } else if (errorMessage.includes('Failed to connect to PostgreSQL') || 
-                     errorMessage.includes('password authentication failed') ||
-                     errorMessage.includes('connection') || 
-                     errorMessage.includes('authentication')) {
-            // Extrair mensagem mais amigável do erro
-            let friendlyMessage = errorMessage;
-            if (errorMessage.includes('usuário') || errorMessage.includes('senha incorretos')) {
-              friendlyMessage = 'Credenciais de acesso incorretas';
-            } else if (errorMessage.includes('connection refused')) {
-              friendlyMessage = 'Servidor PostgreSQL não está acessível';
-            } else if (errorMessage.includes('does not exist')) {
-              friendlyMessage = 'Banco de dados não encontrado';
-            } else if (errorMessage.includes('timeout')) {
-              friendlyMessage = 'Timeout na conexão';
-            }
+      const config = this.configs.find(c => c.id === configId);
+      if (config) {
+        // Verificar se há erro de secret antes de renderizar
+        let databaseStatusMessage = '';
+        if (config.databaseName) {
+          try {
+            // Tentar acessar o banco para verificar se o secret está acessível
+            await invoke('list_postgres_results', {
+              secretName: config.databaseName,
+              configId
+            });
+            databaseStatusMessage = `<div class="database-success">✅ Secret OK e conexão bem-sucedida</div>`;
+          } catch (error) {
+            console.error('Failed to load database results:', error);
+            const errorMessage = String(error);
             
-            this.databaseError = `Erro de conexão PostgreSQL "${config.databaseName}": ${friendlyMessage}`;
-            databaseStatusMessage = `<div class="database-error">❌ ${this.escapeHtml(this.databaseError)}</div>`;
-          } else {
-            // Truncar mensagem muito longa para exibição
-            const displayMessage = errorMessage.length > 100 ? errorMessage.substring(0, 100) + '...' : errorMessage;
-            this.databaseError = `Erro ao acessar banco de dados "${config.databaseName}": ${displayMessage}`;
-            databaseStatusMessage = `<div class="database-error">⚠️ ${this.escapeHtml(this.databaseError)}</div>`;
+            if (errorMessage.includes('NOT_FOUND') && errorMessage.includes('Secret')) {
+              this.databaseError = `Erro ao acessar secret "${config.databaseName}": Secret não encontrado ou sem permissão. Verifique a configuração no GCP.`;
+              databaseStatusMessage = `<div class="database-error">⚠️ ${this.escapeHtml(this.databaseError)}</div>`;
+            } else if (errorMessage.includes('Failed to connect to PostgreSQL') || 
+                       errorMessage.includes('password authentication failed') ||
+                       errorMessage.includes('connection') || 
+                       errorMessage.includes('authentication')) {
+              // Extrair mensagem mais amigável do erro
+              let friendlyMessage = errorMessage;
+              if (errorMessage.includes('usuário') || errorMessage.includes('senha incorretos')) {
+                friendlyMessage = 'Credenciais de acesso incorretas';
+              } else if (errorMessage.includes('connection refused')) {
+                friendlyMessage = 'Servidor PostgreSQL não está acessível';
+              } else if (errorMessage.includes('does not exist')) {
+                friendlyMessage = 'Banco de dados não encontrado';
+              } else if (errorMessage.includes('timeout')) {
+                friendlyMessage = 'Timeout na conexão';
+              }
+              
+              this.databaseError = `Erro de conexão PostgreSQL "${config.databaseName}": ${friendlyMessage}`;
+              databaseStatusMessage = `<div class="database-error">❌ ${this.escapeHtml(this.databaseError)}</div>`;
+            } else {
+              // Truncar mensagem muito longa para exibição
+              const displayMessage = errorMessage.length > 100 ? errorMessage.substring(0, 100) + '...' : errorMessage;
+              this.databaseError = `Erro ao acessar banco de dados "${config.databaseName}": ${displayMessage}`;
+              databaseStatusMessage = `<div class="database-error">⚠️ ${this.escapeHtml(this.databaseError)}</div>`;
+            }
           }
         }
-      }
 
-      this.elements.welcomeScreen.innerHTML = `
-        <div class="selected-config">
-          <div class="config-header">
-            <div class="config-info">
-              <h3>${this.escapeHtml(config.name)}</h3>
-              <p><strong>URL:</strong> ${config.url ? this.escapeHtml(config.url) : 'Configuração Customizada (sem URL)'}</p>
-              <p><strong>Autenticação:</strong> ${config.useDefaultAuth ? 'gcloud' : 'não'}</p>
-              ${config.databaseName ? `
-                <div><strong>Secret do BD:</strong> <span>${this.escapeHtml(config.databaseName)}</span> ${databaseStatusMessage}</div>
-                
-              ` : ''}
+        this.elements.welcomeScreen.innerHTML = `
+          <div class="selected-config">
+            <div class="config-header">
+              <div class="config-info">
+                <h3>${this.escapeHtml(config.name)}</h3>
+                <p><strong>URL:</strong> ${config.url ? this.escapeHtml(config.url) : 'Configuração Customizada (sem URL)'}</p>
+                <p><strong>Autenticação:</strong> ${config.useDefaultAuth ? 'gcloud' : 'não'}</p>
+                ${config.databaseName ? `
+                  <div><strong>Secret do BD:</strong> <span>${this.escapeHtml(config.databaseName)}</span> ${databaseStatusMessage}</div>
+                  
+                ` : ''}
+              </div>
+              <button 
+                class="edit-config-btn" 
+                data-config-id="${config.id}"
+                title="Editar configuração"
+              >
+                ✏️ Editar
+              </button>
+              <button 
+                class="global-history-btn" 
+                data-config-id="${config.id}"
+                title="Ver histórico de resultados"
+              >
+                📋 Histórico
+              </button>
             </div>
-            <button 
-              class="edit-config-btn" 
-              data-config-id="${config.id}"
-              title="Editar configuração"
-            >
-              ✏️ Editar
-            </button>
-            <button 
-              class="global-history-btn" 
-              data-config-id="${config.id}"
-              title="Ver histórico de resultados"
-            >
-              📋 Histórico
-            </button>
+            <div id="openapi-content" class="openapi-content">
+              <p>Carregando especificação OpenAPI...</p>
+            </div>
           </div>
-          <div id="openapi-content" class="openapi-content">
-            <p>Carregando especificação OpenAPI...</p>
-          </div>
-        </div>
-      `;
+        `;
 
-      // Se for configuração customizada sem URL, carregar endpoints customizados
-      if (!config.url) {
-        await this.loadCustomEndpoints(config);
-      } else {
-        // Carregar o OpenAPI JSON
-        await this.loadOpenApiSpec(config);
+        // Se for configuração customizada sem URL, carregar endpoints customizados
+        if (!config.url) {
+          await this.loadCustomEndpoints(config);
+        } else {
+          // Carregar o OpenAPI JSON
+          await this.loadOpenApiSpec(config);
+        }
       }
+    } finally {
+      // Reset loading state
+      this.isLoadingConfig = false;
+      this.elements.configSelect.disabled = false;
     }
   }
 
@@ -1094,30 +1139,7 @@ class ConfigManager {
           <div class="paths-section">
             <h5>Endpoints Disponíveis:</h5>
             <div class="paths-list">
-              ${Object.entries(spec.paths)
-                .map(([path, methods]: [string, any]) => {
-                  // Filtrar apenas os métodos que não têm "summary": "Root"
-                  const filteredMethods = Object.entries(methods).filter(([, details]: [string, any]) => details.summary !== 'Root');
-                  
-                  // Criar itens individuais para cada método
-                  return filteredMethods.map(([method, details]: [string, any]) => `
-                    <div class="path-item method-item">
-                      <div class="path-header" onclick="this.parentElement.classList.toggle('expanded')">
-                        <div class="endpoint-info">
-                          <span class="method-type ${method.toLowerCase()}">${method.toUpperCase()}</span>
-                          <h6>${this.escapeHtml(path)}</h6>
-                          <span class="method-summary">${this.escapeHtml(details.summary || details.description || 'No description')}</span>
-                        </div>
-                        <span class="expand-icon">▶</span>
-                      </div>
-                      <div class="path-content">
-                        <div class="method-test">
-                          ${this.generateTestInterface(method, details, path, spec, currentConfigId)}
-                        </div>
-                      </div>
-                    </div>
-                  `).join('');
-                }).join('')}
+              ${this.groupEndpointsByTags(spec.paths, spec, currentConfigId)}
             </div>
           </div>
         ` : ''}
@@ -1132,6 +1154,9 @@ class ConfigManager {
     container.innerHTML = specHtml;
     this.attachTestEventListeners();
     
+    // Setup real-time body analysis for the newly created textareas
+    this.setupRealTimeBodyAnalysis();
+    
     // Atualizar selects de conjuntos salvos para todos os endpoints
     if (currentConfigId && spec.paths) {
       Object.entries(spec.paths).forEach(([path, methods]: [string, any]) => {
@@ -1143,6 +1168,105 @@ class ConfigManager {
         });
       });
     }
+  }
+
+  private groupEndpointsByTags(paths: any, spec: any, currentConfigId: string): string {
+    // Get the original order of paths from the OpenAPI JSON
+    const originalPathOrder = Object.keys(paths);
+    
+    // Group endpoints by tags while preserving order
+    const tagGroups: { [tag: string]: Array<{ path: string; method: string; details: any }> } = {};
+    const untaggedEndpoints: Array<{ path: string; method: string; details: any }> = [];
+    
+    // Collect all endpoints in the original order
+    originalPathOrder.forEach(path => {
+      const methods = paths[path];
+      Object.entries(methods).forEach(([method, details]: [string, any]) => {
+        // Filter out methods with "summary": "Root"
+        if (details.summary === 'Root') return;
+        
+        const endpoint = { path, method, details };
+        
+        // Get tags for this endpoint
+        const tags = details.tags || [];
+        
+        if (tags.length > 0) {
+          // Use the first tag as the primary grouping
+          const primaryTag = tags[0];
+          if (!tagGroups[primaryTag]) {
+            tagGroups[primaryTag] = [];
+          }
+          tagGroups[primaryTag].push(endpoint);
+        } else {
+          // No tags, add to untagged group
+          untaggedEndpoints.push(endpoint);
+        }
+      });
+    });
+    
+    // Generate HTML for each tag group
+    let html = '';
+    
+    // Sort tags alphabetically for consistent display, but preserve endpoint order within each tag
+    const sortedTags = Object.keys(tagGroups).sort();
+    
+    sortedTags.forEach(tag => {
+      const endpoints = tagGroups[tag];
+      html += `
+        <div class="tag-group">
+          <h6 class="tag-header">${this.escapeHtml(tag)}</h6>
+          <div class="tag-endpoints">
+            ${endpoints.map(({ path, method, details }) => `
+              <div class="path-item method-item">
+                <div class="path-header" onclick="this.parentElement.classList.toggle('expanded')">
+                  <div class="endpoint-info">
+                    <span class="method-type ${method.toLowerCase()}">${method.toUpperCase()}</span>
+                    <h6>${this.escapeHtml(path)}</h6>
+                    <span class="method-summary">${this.escapeHtml(details.summary || details.description || 'No description')}</span>
+                  </div>
+                  <span class="expand-icon">▶</span>
+                </div>
+                <div class="path-content">
+                  <div class="method-test">
+                    ${this.generateTestInterface(method, details, path, spec, currentConfigId)}
+                  </div>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      `;
+    });
+    
+    // Add untagged endpoints if any exist
+    if (untaggedEndpoints.length > 0) {
+      html += `
+        <div class="tag-group">
+          <h6 class="tag-header">Sem Tag</h6>
+          <div class="tag-endpoints">
+            ${untaggedEndpoints.map(({ path, method, details }) => `
+              <div class="path-item method-item">
+                <div class="path-header" onclick="this.parentElement.classList.toggle('expanded')">
+                  <div class="endpoint-info">
+                    <span class="method-type ${method.toLowerCase()}">${method.toUpperCase()}</span>
+                    <h6>${this.escapeHtml(path)}</h6>
+                    <span class="method-summary">${this.escapeHtml(details.summary || details.description || 'No description')}</span>
+                  </div>
+                  <span class="expand-icon">▶</span>
+                </div>
+                <div class="path-content">
+                  <div class="method-test">
+                    ${this.generateTestInterface(method, details, path, spec, currentConfigId)}
+                  </div>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      `;
+    }
+    
+    return html;
   }
 
   private displayError(error: unknown, container: HTMLDivElement) {
@@ -1269,9 +1393,61 @@ class ConfigManager {
   private showUpdateModal(newVersion: string, currentVersion: string, body: string) {
     this.elements.newVersion.textContent = newVersion;
     this.elements.currentVersion.textContent = currentVersion;
-    this.elements.updateNotes.innerHTML = body || 'Sem notas de atualização disponíveis.';
+    this.elements.updateNotes.innerHTML = this.parseChangelog(body || 'Sem notas de atualização disponíveis.');
     this.elements.updateModal.classList.remove('hidden');
     document.body.style.overflow = 'hidden';
+  }
+
+  private parseChangelog(body: string): string {
+    if (!body || body === 'Sem notas de atualização disponíveis.') {
+      return '<p class="no-changelog">Sem notas de atualização disponíveis.</p>';
+    }
+
+    // Parse markdown-like content from GitHub releases
+    let parsed = body
+      // Convert line breaks to <br> first
+      .replace(/\n\n/g, '</p><p>')
+      .replace(/\n/g, '<br>')
+      
+      // Parse headers (##, ###)
+      .replace(/^### (.*$)/gim, '<h4 class="changelog-header-3">$1</h4>')
+      .replace(/^## (.*$)/gim, '<h3 class="changelog-header-2">$1</h3>')
+      .replace(/^# (.*$)/gim, '<h2 class="changelog-header-1">$1</h2>')
+      
+      // Parse bold text
+      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+      
+      // Parse italic text
+      .replace(/\*(.*?)\*/g, '<em>$1</em>')
+      
+      // Parse code blocks
+      .replace(/```(.*?)```/gs, '<pre class="changelog-code"><code>$1</code></pre>')
+      
+      // Parse inline code
+      .replace(/`(.*?)`/g, '<code class="changelog-inline-code">$1</code>')
+      
+      // Parse links
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
+      
+      // Parse lists
+      .replace(/^\* (.+)$/gim, '<li class="changelog-list-item">$1</li>')
+      .replace(/(<li class="changelog-list-item">.*<\/li>)/s, '<ul class="changelog-list">$1</ul>')
+      
+      // Parse numbered lists
+      .replace(/^\d+\. (.+)$/gim, '<li class="changelog-list-item-numbered">$1</li>')
+      .replace(/(<li class="changelog-list-item-numbered">.*<\/li>)/s, '<ol class="changelog-list-numbered">$1</ol>');
+
+    // Wrap in paragraphs if not already wrapped
+    if (!parsed.includes('<p>') && !parsed.includes('<h') && !parsed.includes('<ul>') && !parsed.includes('<ol>') && !parsed.includes('<pre>')) {
+      parsed = `<p>${parsed}</p>`;
+    }
+
+    // Add a title if not present
+    if (!parsed.includes('<h') && !parsed.includes('Sem notas de atualização')) {
+      parsed = `<h4 class="changelog-header-3">📋 Notas da Versão</h4><p>${parsed}</p>`;
+    }
+
+    return parsed;
   }
 
   private hideUpdateModal() {
@@ -1676,6 +1852,9 @@ class ConfigManager {
 
     // Attach event listeners for custom endpoint save/load buttons
     this.attachCustomSaveLoadListeners(config, endpoints);
+
+    // Setup real-time body analysis for the newly created textareas
+    this.setupRealTimeBodyAnalysis();
   }
 
   private generateCustomTestInterface(endpoint: CustomEndpoint, pathId: string, config: Configuration): string {
@@ -1974,9 +2153,12 @@ class ConfigManager {
       // Generate consistent pathId for search functionality
       const searchPathId = `${endpoint.method.toLowerCase()}-${endpoint.endpoint_path.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '')}`;
 
+      // Determine CSS class based on HTTP status
+      const statusClass = this.getResponseStatusClass(response.status || 200);
+
       // Display result with save buttons (same format as regular endpoints)
       testResult.innerHTML = `
-        <div class="test-result success">
+        <div class="test-result ${statusClass}">
           <div class="test-status">
             <div class="test-status-header">
               <h5>Resposta ${response.status || 200} ${response.statusText || 'OK'}</h5>
@@ -3366,10 +3548,11 @@ class ConfigManager {
       }
     });
 
-    // Preencher body
+    // Preencher body e mostrar diferenças de chaves
     const bodyTextarea = document.getElementById(`body-${method}-${pathId}`) as HTMLTextAreaElement;
     if (bodyTextarea) {
       bodyTextarea.value = savedSet.body;
+      this.showBodyKeyDifferences(savedSet.body, method, pathId);
     }
 
     // Preencher o input do nome com o nome do conjunto
@@ -3377,6 +3560,327 @@ class ConfigManager {
     if (nameInput) {
       nameInput.value = savedSet.name;
     }
+  }
+
+  private showBodyKeyDifferences(savedBody: string, method: string, pathId: string) {
+    const bodyKey = `${method}-${pathId}`;
+    const defaultBody = this.defaultBodyValues.get(bodyKey) || '';
+    
+    // Validar se o JSON atual é válido
+    let isValidJson = true;
+    let jsonError = '';
+    
+    try {
+      if (savedBody.trim()) {
+        JSON.parse(savedBody);
+      }
+    } catch (error) {
+      isValidJson = false;
+      jsonError = String(error);
+    }
+    
+    // Se o JSON for inválido, mostrar mensagem de erro
+    if (!isValidJson) {
+      this.createJsonErrorDisplay(method, pathId, jsonError);
+      return;
+    }
+    
+    // Extrair chaves dos JSONs
+    const savedKeys = this.extractJsonKeys(savedBody);
+    const defaultKeys = this.extractJsonKeys(defaultBody);
+    
+    // Encontrar chaves faltando e sobrando
+    const missingKeys = defaultKeys.filter(key => !savedKeys.includes(key));
+    const extraKeys = savedKeys.filter(key => !defaultKeys.includes(key));
+    
+    // Se não houver diferenças, remover display de diferenças se existir
+    if (missingKeys.length === 0 && extraKeys.length === 0) {
+      this.removeBodyDifferencesDisplay(method, pathId);
+      return;
+    }
+    
+    // Criar ou atualizar display de diferenças
+    this.createBodyDifferencesDisplay(method, pathId, missingKeys, extraKeys);
+  }
+
+  private extractJsonKeys(jsonString: string): string[] {
+    try {
+      if (!jsonString.trim()) return [];
+      const parsed = JSON.parse(jsonString);
+      return this.extractKeysFromObject(parsed);
+    } catch (error) {
+      return [];
+    }
+  }
+
+  private extractKeysFromObject(obj: any, prefix: string = ''): string[] {
+    const keys: string[] = [];
+    
+    if (Array.isArray(obj)) {
+      obj.forEach((item, index) => {
+        if (typeof item === 'object' && item !== null) {
+          keys.push(...this.extractKeysFromObject(item, `${prefix}[${index}]`));
+        }
+      });
+    } else if (typeof obj === 'object' && obj !== null) {
+      Object.keys(obj).forEach(key => {
+        const fullKey = prefix ? `${prefix}.${key}` : key;
+        keys.push(fullKey);
+        
+        if (typeof obj[key] === 'object' && obj[key] !== null) {
+          keys.push(...this.extractKeysFromObject(obj[key], fullKey));
+        }
+      });
+    }
+    
+    return keys;
+  }
+
+  private createBodyDifferencesDisplay(method: string, pathId: string, missingKeys: string[], extraKeys: string[]) {
+    // Remover display anterior se existir
+    this.removeBodyDifferencesDisplay(method, pathId);
+    
+    // Criar container de diferenças
+    const diffContainer = document.createElement('div');
+    diffContainer.className = 'body-differences-container';
+    diffContainer.id = `body-differences-${method}-${pathId}`;
+    
+    diffContainer.innerHTML = `
+      <div class="body-differences-header">
+        <h4>📋 Análise de Chaves do JSON</h4>
+        <button type="button" class="close-diff-btn" onclick="this.closest('.body-differences-container').remove()">×</button>
+      </div>
+      <div class="body-differences-content">
+        <div class="diff-column missing-keys">
+          <h5>🔴 Chaves Faltando</h5>
+          <div class="keys-list">
+            ${missingKeys.length > 0 ? missingKeys.map(key => `
+              <div class="key-item missing">
+                <span class="key-text">${this.escapeHtml(key)}</span>
+                <button type="button" class="key-action-btn add-key-btn" 
+                        onclick="window.configManager.addMissingKey('${this.escapeHtml(key)}', '${method}', '${pathId}')" 
+                        title="Adicionar chave com valor padrão">+</button>
+              </div>
+            `).join('') : '<div class="no-keys">Nenhuma chave faltando</div>'}
+          </div>
+        </div>
+        <div class="diff-column extra-keys">
+          <h5>🟡 Chaves Sobrando</h5>
+          <div class="keys-list">
+            ${extraKeys.length > 0 ? extraKeys.map(key => `
+              <div class="key-item extra">
+                <span class="key-text">${this.escapeHtml(key)}</span>
+                <button type="button" class="key-action-btn remove-key-btn" 
+                        onclick="window.configManager.removeExtraKey('${this.escapeHtml(key)}', '${method}', '${pathId}')" 
+                        title="Remover chave">−</button>
+              </div>
+            `).join('') : '<div class="no-keys">Nenhuma chave sobrando</div>'}
+          </div>
+        </div>
+      </div>
+    `;
+    
+    // Inserir após o textarea do body
+    const bodyTextarea = document.getElementById(`body-${method}-${pathId}`);
+    if (bodyTextarea && bodyTextarea.parentNode) {
+      bodyTextarea.parentNode.insertBefore(diffContainer, bodyTextarea.nextSibling);
+    } else {
+      console.warn(`Could not find body textarea with id: body-${method}-${pathId}`);
+    }
+  }
+
+  private removeBodyDifferencesDisplay(method: string, pathId: string) {
+    const existingDiff = document.getElementById(`body-differences-${method}-${pathId}`);
+    if (existingDiff) {
+      existingDiff.remove();
+    }
+  }
+
+  private createJsonErrorDisplay(method: string, pathId: string, errorMessage: string) {
+    // Remover display anterior se existir
+    this.removeBodyDifferencesDisplay(method, pathId);
+    
+    // Criar container de erro
+    const errorContainer = document.createElement('div');
+    errorContainer.className = 'body-differences-container json-error';
+    errorContainer.id = `body-differences-${method}-${pathId}`;
+    
+    errorContainer.innerHTML = `
+      <div class="body-differences-header">
+        <h4>⚠️ Erro de Sintaxe JSON</h4>
+        <button type="button" class="close-diff-btn" onclick="this.closest('.body-differences-container').remove()">×</button>
+      </div>
+      <div class="body-differences-content">
+        <div class="json-error-content">
+          <div class="error-message">
+            <p><strong>Por favor, corrija o JSON para continuar:</strong></p>
+            <p class="error-text">${this.escapeHtml(errorMessage)}</p>
+          </div>
+          <div class="error-tips">
+            <h5>🔧 Dicas comuns:</h5>
+            <ul>
+              <li>Verifique se há vírgulas faltando ou extras</li>
+              <li>Aspas duplas devem envolver strings e nomes de propriedades</li>
+              <li>Remova vírgulas no final do último objeto/array</li>
+              <li>Verifique se há colchetes ou chaves não fechados</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    `;
+    
+    // Inserir após o textarea do body
+    const bodyTextarea = document.getElementById(`body-${method}-${pathId}`);
+    if (bodyTextarea && bodyTextarea.parentNode) {
+      bodyTextarea.parentNode.insertBefore(errorContainer, bodyTextarea.nextSibling);
+    } else {
+      console.warn(`Could not find body textarea with id: body-${method}-${pathId}`);
+    }
+  }
+
+  addMissingKey(keyPath: string, method: string, pathId: string) {
+    const bodyTextarea = document.getElementById(`body-${method}-${pathId}`) as HTMLTextAreaElement;
+    if (!bodyTextarea) return;
+
+    try {
+      // Obter o JSON atual do textarea
+      const currentBody = bodyTextarea.value || '{}';
+      const currentObj = JSON.parse(currentBody);
+
+      // Obter o valor padrão do example body
+      const bodyKey = `${method}-${pathId}`;
+      const defaultBody = this.defaultBodyValues.get(bodyKey) || '{}';
+      const defaultObj = JSON.parse(defaultBody);
+
+      // Adicionar a chave faltando com valor padrão
+      this.setNestedValue(currentObj, keyPath, this.getNestedValue(defaultObj, keyPath));
+
+      // Atualizar o textarea
+      bodyTextarea.value = JSON.stringify(currentObj, null, 2);
+
+      // Disparar evento para atualizar análise
+      this.triggerBodyAnalysis(method, pathId);
+    } catch (error) {
+      console.error('Error adding missing key:', error);
+      this.showToast('Erro ao adicionar chave faltando', 'error');
+    }
+  }
+
+  removeExtraKey(keyPath: string, method: string, pathId: string) {
+    const bodyTextarea = document.getElementById(`body-${method}-${pathId}`) as HTMLTextAreaElement;
+    if (!bodyTextarea) return;
+
+    try {
+      // Obter o JSON atual do textarea
+      const currentBody = bodyTextarea.value || '{}';
+      const currentObj = JSON.parse(currentBody);
+
+      // Remover a chave extra
+      this.deleteNestedValue(currentObj, keyPath);
+
+      // Atualizar o textarea
+      bodyTextarea.value = JSON.stringify(currentObj, null, 2);
+
+      // Disparar evento para atualizar análise
+      this.triggerBodyAnalysis(method, pathId);
+    } catch (error) {
+      console.error('Error removing extra key:', error);
+      this.showToast('Erro ao remover chave extra', 'error');
+    }
+  }
+
+  private setNestedValue(obj: any, keyPath: string, value: any) {
+    const keys = keyPath.split('.');
+    let current = obj;
+
+    // Navegar até o penúltimo nível
+    for (let i = 0; i < keys.length - 1; i++) {
+      const key = keys[i];
+      if (!(key in current) || typeof current[key] !== 'object' || current[key] === null) {
+        current[key] = {};
+      }
+      current = current[key];
+    }
+
+    // Definir o valor no último nível
+    const lastKey = keys[keys.length - 1];
+    current[lastKey] = value;
+  }
+
+  private getNestedValue(obj: any, keyPath: string): any {
+    const keys = keyPath.split('.');
+    let current = obj;
+
+    for (const key of keys) {
+      if (current && typeof current === 'object' && key in current) {
+        current = current[key];
+      } else {
+        return null; // Chave não encontrada
+      }
+    }
+
+    return current;
+  }
+
+  private deleteNestedValue(obj: any, keyPath: string) {
+    const keys = keyPath.split('.');
+    let current = obj;
+
+    // Navegar até o penúltimo nível
+    for (let i = 0; i < keys.length - 1; i++) {
+      const key = keys[i];
+      if (current && typeof current === 'object' && key in current) {
+        current = current[key];
+      } else {
+        return; // Caminho não encontrado
+      }
+    }
+
+    // Remover a chave no último nível
+    const lastKey = keys[keys.length - 1];
+    if (current && typeof current === 'object' && lastKey in current) {
+      delete current[lastKey];
+    }
+  }
+
+  private triggerBodyAnalysis(method: string, pathId: string) {
+    const bodyTextarea = document.getElementById(`body-${method}-${pathId}`) as HTMLTextAreaElement;
+    if (!bodyTextarea) return;
+
+    // Obter o valor atual e analisar
+    const currentBody = bodyTextarea.value;
+    this.showBodyKeyDifferences(currentBody, method, pathId);
+  }
+
+  setupRealTimeBodyAnalysis() {
+    // Adicionar listeners para todos os textareas de body existentes
+    const bodyTextareas = document.querySelectorAll('textarea[id^="body-"]');
+    bodyTextareas.forEach(textarea => {
+      const textareaEl = textarea as ExtendedHTMLTextAreaElement;
+      const match = textareaEl.id.match(/^body-(\w+)-(.+)$/);
+      if (match) {
+        const [, method, pathId] = match;
+        
+        // Remover listener anterior se existir
+        if (textareaEl._bodyAnalysisListener) {
+          textareaEl.removeEventListener('input', textareaEl._bodyAnalysisListener);
+        }
+        
+        // Adicionar novo listener
+        const listener = () => {
+          // Usar debounce para não analisar a cada digitação
+          if (textareaEl._analysisTimeout) {
+            clearTimeout(textareaEl._analysisTimeout);
+          }
+          textareaEl._analysisTimeout = setTimeout(() => {
+            this.triggerBodyAnalysis(method, pathId);
+          }, 500);
+        };
+        
+        textareaEl.addEventListener('input', listener);
+        textareaEl._bodyAnalysisListener = listener;
+      }
+    });
   }
 
   private async updateSavedSetsSelect(method: string, path: string, configId: string) {
@@ -4393,8 +4897,11 @@ class ConfigManager {
       const timestamp = new Date().toISOString();
       const hasData = response.data && (typeof response.data === 'object' && Object.keys(response.data).length > 0 || typeof response.data === 'string' && response.data.trim());
 
+      // Determine CSS class based on HTTP status
+      const statusClass = this.getResponseStatusClass(response.status || 200);
+
       testResult.innerHTML = `
-        <div class="test-result success">
+        <div class="test-result ${statusClass}">
           <div class="test-status">
             <div class="test-status-header">
               <h5>Resposta ${response.status || 200} ${response.statusText || 'OK'}</h5>
@@ -4680,7 +5187,7 @@ class ConfigManager {
   private generateExampleBody(details: any, spec: any): string {
     // Tentar obter exemplo do requestBody
     if (details.requestBody?.content?.['application/json']?.example) {
-      return JSON.stringify(details.requestBody.content['application/json'].example, null, 2);
+      return this.stringifyOrdered(details.requestBody.content['application/json'].example);
     }
     
     // Tentar obter exemplo do schema
@@ -4699,7 +5206,7 @@ class ConfigManager {
 
   private generateExampleFromSchema(schema: any, spec: any): string {
     if (schema.example) {
-      return JSON.stringify(schema.example, null, 2);
+      return this.stringifyOrdered(schema.example);
     }
     
     if (schema.$ref) {
@@ -4714,26 +5221,66 @@ class ConfigManager {
     }
     
     if (schema.type === 'object' && schema.properties) {
-      const obj: any = {};
-      Object.entries(schema.properties).forEach(([key, prop]: [string, any]) => {
+      // Use Map to preserve key order
+      const obj = new Map();
+      Object.keys(schema.properties).forEach(key => {
+        const prop = schema.properties[key];
+        let value;
         if (prop.example) {
-          obj[key] = prop.example;
+          value = prop.example;
         } else if (prop.type === 'string') {
-          obj[key] = prop.enum?.[0] || `string_${key}`;
+          value = prop.enum?.[0] || `string_${key}`;
         } else if (prop.type === 'number' || prop.type === 'integer') {
-          obj[key] = prop.minimum || 0;
+          value = prop.minimum || 0;
         } else if (prop.type === 'boolean') {
-          obj[key] = true;
+          value = true;
         } else if (prop.type === 'array') {
-          obj[key] = [];
+          value = [];
         } else {
-          obj[key] = null;
+          value = null;
         }
+        obj.set(key, value);
       });
-      return JSON.stringify(obj, null, 2);
+      return this.stringifyOrdered(obj);
     }
     
     return '{}';
+  }
+
+  private stringifyOrdered(obj: any, indent: number = 0): string {
+    const indentStr = '  '.repeat(indent);
+    const nextIndentStr = '  '.repeat(indent + 1);
+    
+    if (obj === null || obj === undefined) {
+      return 'null';
+    }
+    
+    if (typeof obj !== 'object') {
+      return JSON.stringify(obj);
+    }
+    
+    if (Array.isArray(obj)) {
+      if (obj.length === 0) return '[]';
+      const items = obj.map(item => this.stringifyOrdered(item, indent + 1));
+      return '[\n' + nextIndentStr + items.join(',\n' + nextIndentStr) + '\n' + indentStr + ']';
+    }
+    
+    if (obj instanceof Map) {
+      if (obj.size === 0) return '{}';
+      const entries = Array.from(obj.entries()).map(([key, value]) => 
+        nextIndentStr + JSON.stringify(key) + ': ' + this.stringifyOrdered(value, indent + 1)
+      );
+      return '{\n' + entries.join(',\n') + '\n' + indentStr + '}';
+    }
+    
+    // Regular object - convert to Map to preserve key order
+    const map = new Map();
+    for (const key in obj) {
+      if (obj.hasOwnProperty(key)) {
+        map.set(key, obj[key]);
+      }
+    }
+    return this.stringifyOrdered(map, indent);
   }
 
   private getCurrentConfigId(): string {
@@ -5291,5 +5838,6 @@ class ConfigManager {
 
 window.addEventListener("DOMContentLoaded", () => {
   const configManager = new ConfigManager();
+  (window as any).configManager = configManager; // Expose globally for button onclick handlers
   configManager.init();
 });
